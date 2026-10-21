@@ -47,6 +47,8 @@ namespace Gsplat.Editor
 
         static void OnSceneGUI(SceneView sceneView)
         {
+            if (GsplatRiggingWindow.IsSceneRiggingActive)
+                return;
             Event current = Event.current;
             if (current == null || current.alt || !sceneView || !sceneView.camera)
                 return;

@@ -13,7 +13,7 @@ namespace Gsplat
     /// </summary>
     [ExecuteAlways]
     [DisallowMultipleComponent]
-    [AddComponentMenu("Gsplat/Gaussian Relighting")]
+    [AddComponentMenu("")]
     public sealed class GsplatProxyRelighting : MonoBehaviour
     {
         [Tooltip(

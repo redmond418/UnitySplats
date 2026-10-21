@@ -134,6 +134,44 @@ namespace Gsplat.Editor
             return true;
         }
 
+        internal static bool ConfigureUnified(GsplatVolumeLighting relighting,
+            bool logMissingRequirements = true)
+        {
+            if (!relighting || relighting.RelightingMode != GsplatRelightingMode.ProxyMesh)
+                return false;
+
+            GsplatRenderer renderer = relighting.GetComponent<GsplatRenderer>();
+            Renderer proxy = relighting.ProxyMesh;
+            if (!renderer || !proxy ||
+                (proxy is not MeshRenderer && proxy is not SkinnedMeshRenderer) ||
+                !proxy.transform.IsChildOf(renderer.transform) || proxy.transform == renderer.transform)
+            {
+                if (logMissingRequirements)
+                    Debug.LogError(
+                        "[UnitySplats] Proxy Mesh mode needs an aligned MeshRenderer or SkinnedMeshRenderer child of the Gaussian renderer.",
+                        relighting);
+                return false;
+            }
+
+            GsplatProxyRelighting binding = proxy.GetComponent<GsplatProxyRelighting>();
+            if (!binding)
+                binding = Undo.AddComponent<GsplatProxyRelighting>(proxy.gameObject);
+            if (!binding)
+                return false;
+
+            Undo.RecordObjects(new UnityEngine.Object[] { relighting, binding },
+                "Configure Gaussian Proxy Relighting");
+            relighting.SetProxyBinding(binding);
+            bool configured = Configure(binding, logMissingRequirements);
+            if (configured)
+            {
+                relighting.ProxySourceCamera = binding.SourceCamera;
+                relighting.ApplyProxySettings(binding, true);
+                EditorUtility.SetDirty(relighting);
+            }
+            return configured;
+        }
+
         internal static void ExcludeProxyLayersFromSourceCamera(GsplatRelighting relighting)
         {
             if (!relighting)

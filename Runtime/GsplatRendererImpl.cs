@@ -43,6 +43,55 @@ namespace Gsplat
         static readonly int k_relightMap = Shader.PropertyToID("_GsplatRelightMap");
         static readonly int k_relightScreen = Shader.PropertyToID("_GsplatRelightScreen");
         static readonly int k_relightParams = Shader.PropertyToID("_GsplatRelightParams");
+        static readonly int k_volumeEnabled = Shader.PropertyToID("_GsplatVolumeEnabled");
+        static readonly int k_volumeDensity = Shader.PropertyToID("_GsplatVolumeDensity");
+        static readonly int k_volumeBoundsMin = Shader.PropertyToID("_GsplatVolumeBoundsMin");
+        static readonly int k_volumeBoundsMax = Shader.PropertyToID("_GsplatVolumeBoundsMax");
+        static readonly int k_volumeBoundsInvSize =
+            Shader.PropertyToID("_GsplatVolumeBoundsInvSize");
+        static readonly int k_volumeLightingParams =
+            Shader.PropertyToID("_GsplatVolumeLightingParams");
+        static readonly int k_volumeOcclusionParams =
+            Shader.PropertyToID("_GsplatVolumeOcclusionParams");
+        static readonly int k_volumeAmbientColor =
+            Shader.PropertyToID("_GsplatVolumeAmbientColor");
+        static readonly int k_volumeLightCount =
+            Shader.PropertyToID("_GsplatVolumeLightCount");
+        static readonly int k_volumeLightColors =
+            Shader.PropertyToID("_GsplatVolumeLightColors");
+        static readonly int k_volumeLightPositions =
+            Shader.PropertyToID("_GsplatVolumeLightPositions");
+        static readonly int k_volumeLightDirections =
+            Shader.PropertyToID("_GsplatVolumeLightDirections");
+        static readonly int k_volumeLightSpotParams =
+            Shader.PropertyToID("_GsplatVolumeLightSpotParams");
+        static readonly int k_volumeNormalMatrix =
+            Shader.PropertyToID("_GsplatVolumeNormalMatrix");
+        static readonly int k_volumeWorldToLocal =
+            Shader.PropertyToID("_GsplatVolumeWorldToLocal");
+        static readonly Vector4[] s_emptyVolumeLightVectors =
+            { Vector4.zero, Vector4.zero, Vector4.zero, Vector4.zero };
+        static readonly Vector4[] s_emptyVolumeLightPositions =
+        {
+            new(0f, 0f, 0f, 3f), new(0f, 0f, 0f, 3f),
+            new(0f, 0f, 0f, 3f), new(0f, 0f, 0f, 3f)
+        };
+        static readonly int k_skinningEnabled = Shader.PropertyToID("_GsplatSkinningEnabled");
+        static readonly int k_skinWeights = Shader.PropertyToID("_GsplatSkinWeights");
+        static readonly int k_skinReferenceRows = Shader.PropertyToID("_GsplatSkinReferenceRows");
+        static readonly int k_skinBoneRows = Shader.PropertyToID("_GsplatSkinBoneRows");
+        static readonly int k_skinIndexTexture = Shader.PropertyToID("_GsplatSkinIndexTexture");
+        static readonly int k_skinWeightTexture = Shader.PropertyToID("_GsplatSkinWeightTexture");
+        static readonly int k_skinReferenceTexture = Shader.PropertyToID("_GsplatSkinReferenceTexture");
+        static readonly int k_skinBoneTexture = Shader.PropertyToID("_GsplatSkinBoneTexture");
+        static readonly int k_skinIndexTextureWidth = Shader.PropertyToID("_GsplatSkinIndexTextureWidth");
+        static readonly int k_skinWeightTextureWidth = Shader.PropertyToID("_GsplatSkinWeightTextureWidth");
+        static readonly int k_skinReferenceTextureWidth = Shader.PropertyToID("_GsplatSkinReferenceTextureWidth");
+        static readonly int k_skinBoneTextureWidth = Shader.PropertyToID("_GsplatSkinBoneTextureWidth");
+
+        GraphicsBuffer m_dummySkinWeightBuffer;
+        GraphicsBuffer m_dummySkinReferenceRowBuffer;
+        GraphicsBuffer m_dummySkinBoneRowBuffer;
 
         uint m_framesBeforeRecomputeSort = 0;
         uint m_sortsBeforeRecomputeCutouts = 0;
@@ -72,8 +121,32 @@ namespace Gsplat
             CreatePropertyBlock();
         }
 
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) =>
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
+            GsplatSkinningSource rig = null)
+        {
+            ComputeShader shader = m_gsplatAsset.GsplatMaterial.CalcDepthShader;
+            if (rig && rig.IsActivelyAnimating && !rig.UsesVertexTextures)
+            {
+                cmd.SetComputeIntParam(shader, k_skinningEnabled, 1);
+                cmd.SetComputeBufferParam(shader, 0, k_skinWeights, rig.SkinWeightBuffer);
+                cmd.SetComputeBufferParam(shader, 0, k_skinReferenceRows,
+                    rig.ReferenceInverseBuffer);
+                cmd.SetComputeBufferParam(shader, 0, k_skinBoneRows, rig.BoneRowBuffer);
+            }
+            else
+            {
+                // Compute shader state is shared between renderers, so explicitly clear the flag
+                // and provide valid SRVs after an animated renderer has dispatched with these
+                // same shader assets. D3D12 validates declared resources even on disabled paths.
+                EnsureDummySkinningBuffers();
+                cmd.SetComputeIntParam(shader, k_skinningEnabled, 0);
+                cmd.SetComputeBufferParam(shader, 0, k_skinWeights, m_dummySkinWeightBuffer);
+                cmd.SetComputeBufferParam(shader, 0, k_skinReferenceRows,
+                    m_dummySkinReferenceRowBuffer);
+                cmd.SetComputeBufferParam(shader, 0, k_skinBoneRows, m_dummySkinBoneRowBuffer);
+            }
             m_gsplatAsset.ComputeDepth(cmd, matrixMv, m_remainingCount, SorterResource, GsplatResource);
+        }
 
         public void SetActiveSourceIds(uint[] sourceIds)
         {
@@ -328,6 +401,42 @@ namespace Gsplat
             }
         }
 
+        void EnsureDummySkinningBuffers()
+        {
+            if (m_dummySkinWeightBuffer != null && m_dummySkinReferenceRowBuffer != null &&
+                m_dummySkinBoneRowBuffer != null)
+                return;
+
+            var identityWeight = new GsplatRigWeight { BoneIndex0 = 0, Weight0 = 1f };
+            m_dummySkinWeightBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1,
+                sizeof(uint) * 4 + sizeof(float) * 4)
+            {
+                name = "Gsplat.DisabledSkinWeight"
+            };
+            m_dummySkinWeightBuffer.SetData(new[] { identityWeight });
+
+            Matrix4x4 identity = Matrix4x4.identity;
+            var identityRows = new[]
+            {
+                identity.GetRow(0), identity.GetRow(1), identity.GetRow(2), identity.GetRow(3)
+            };
+            m_dummySkinReferenceRowBuffer = new GraphicsBuffer(
+                GraphicsBuffer.Target.Structured, 3, sizeof(float) * 4)
+            {
+                name = "Gsplat.DisabledSkinReferenceRows"
+            };
+            m_dummySkinReferenceRowBuffer.SetData(new[]
+            {
+                identityRows[0], identityRows[1], identityRows[2]
+            });
+            m_dummySkinBoneRowBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 4,
+                sizeof(float) * 4)
+            {
+                name = "Gsplat.DisabledSkinBoneRows"
+            };
+            m_dummySkinBoneRowBuffer.SetData(identityRows);
+        }
+
         public void Dispose()
         {
             ReleaseGsplatAsset();
@@ -344,6 +453,12 @@ namespace Gsplat
             OrderSizeBuffer = null;
             BoundsBuffer?.Dispose();
             BoundsBuffer = null;
+            m_dummySkinWeightBuffer?.Dispose();
+            m_dummySkinWeightBuffer = null;
+            m_dummySkinReferenceRowBuffer?.Dispose();
+            m_dummySkinReferenceRowBuffer = null;
+            m_dummySkinBoneRowBuffer?.Dispose();
+            m_dummySkinBoneRowBuffer = null;
         }
 
         public void ForceRefresh()
@@ -425,7 +540,8 @@ namespace Gsplat
         public void Render(Transform transform, int layer, bool gammaToLinear = false, int shDegree = 3,
             float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0,
             GsplatRelighting relighting = null, float relightingBlend = 1f,
-            float relightingBrightness = 2f, float relightingBackground = 1f)
+            float relightingBrightness = 2f, float relightingBackground = 1f,
+            GsplatSkinningSource rig = null, GsplatVolumeLighting volumeLighting = null)
         {
             if (m_remainingCount <= 0)
                 return;
@@ -438,6 +554,101 @@ namespace Gsplat
             m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
             m_propertyBlock.SetInteger(k_antialiased, m_gsplatAsset.Antialiased ? 1 : 0);
             m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
+            if (rig && rig.IsActivelyAnimating)
+            {
+                m_propertyBlock.SetInteger(k_skinningEnabled, 1);
+                if (rig.UsesVertexTextures)
+                {
+                    m_propertyBlock.SetTexture(k_skinIndexTexture, rig.SkinIndexTexture);
+                    m_propertyBlock.SetTexture(k_skinWeightTexture, rig.SkinWeightTexture);
+                    m_propertyBlock.SetTexture(k_skinReferenceTexture,
+                        rig.ReferenceInverseTexture);
+                    m_propertyBlock.SetTexture(k_skinBoneTexture, rig.BoneMatrixTexture);
+                    m_propertyBlock.SetInteger(k_skinIndexTextureWidth,
+                        rig.SkinIndexTexture.width);
+                    m_propertyBlock.SetInteger(k_skinWeightTextureWidth,
+                        rig.SkinWeightTexture.width);
+                    m_propertyBlock.SetInteger(k_skinReferenceTextureWidth,
+                        rig.ReferenceInverseTexture.width);
+                    m_propertyBlock.SetInteger(k_skinBoneTextureWidth,
+                        rig.BoneMatrixTexture.width);
+                }
+                else
+                {
+                    m_propertyBlock.SetBuffer(k_skinWeights, rig.SkinWeightBuffer);
+                    m_propertyBlock.SetBuffer(k_skinReferenceRows,
+                        rig.ReferenceInverseBuffer);
+                    m_propertyBlock.SetBuffer(k_skinBoneRows, rig.BoneRowBuffer);
+                }
+            }
+            else
+            {
+                m_propertyBlock.SetInteger(k_skinningEnabled, 0);
+                if (GsplatUtils.UseVertexDataTextures)
+                {
+                    // Portable shader variants still require valid sampled resources even when
+                    // skinning is disabled.
+                    m_propertyBlock.SetTexture(k_skinIndexTexture, Texture2D.blackTexture);
+                    m_propertyBlock.SetTexture(k_skinWeightTexture, Texture2D.blackTexture);
+                    m_propertyBlock.SetTexture(k_skinReferenceTexture, Texture2D.blackTexture);
+                    m_propertyBlock.SetTexture(k_skinBoneTexture, Texture2D.blackTexture);
+                    m_propertyBlock.SetInteger(k_skinIndexTextureWidth, 1);
+                    m_propertyBlock.SetInteger(k_skinWeightTextureWidth, 1);
+                    m_propertyBlock.SetInteger(k_skinReferenceTextureWidth, 1);
+                    m_propertyBlock.SetInteger(k_skinBoneTextureWidth, 1);
+                }
+                else
+                {
+                    EnsureDummySkinningBuffers();
+                    m_propertyBlock.SetBuffer(k_skinWeights, m_dummySkinWeightBuffer);
+                    m_propertyBlock.SetBuffer(k_skinReferenceRows,
+                        m_dummySkinReferenceRowBuffer);
+                    m_propertyBlock.SetBuffer(k_skinBoneRows, m_dummySkinBoneRowBuffer);
+                }
+            }
+            if (volumeLighting && volumeLighting.TryGetShaderData(out var volumeData))
+            {
+                m_propertyBlock.SetInteger(k_volumeEnabled, 1);
+                m_propertyBlock.SetTexture(k_volumeDensity, volumeData.OpacityField);
+                m_propertyBlock.SetVector(k_volumeBoundsMin, volumeData.BoundsMin);
+                m_propertyBlock.SetVector(k_volumeBoundsMax, volumeData.BoundsMax);
+                m_propertyBlock.SetVector(k_volumeBoundsInvSize, volumeData.BoundsInvSize);
+                m_propertyBlock.SetVector(k_volumeLightingParams, volumeData.LightingParams);
+                m_propertyBlock.SetVector(k_volumeOcclusionParams,
+                    volumeData.OcclusionParams);
+                m_propertyBlock.SetVector(k_volumeAmbientColor, volumeData.AmbientColor);
+                m_propertyBlock.SetInteger(k_volumeLightCount, volumeData.LightCount);
+                m_propertyBlock.SetVectorArray(k_volumeLightColors, volumeData.LightColors);
+                m_propertyBlock.SetVectorArray(k_volumeLightPositions, volumeData.LightPositions);
+                m_propertyBlock.SetVectorArray(k_volumeLightDirections, volumeData.LightDirections);
+                m_propertyBlock.SetVectorArray(k_volumeLightSpotParams,
+                    volumeData.LightSpotParams);
+                m_propertyBlock.SetMatrix(k_volumeNormalMatrix, volumeData.NormalMatrix);
+                m_propertyBlock.SetMatrix(k_volumeWorldToLocal, volumeData.WorldToLocal);
+            }
+            else
+            {
+                m_propertyBlock.SetInteger(k_volumeEnabled, 0);
+                m_propertyBlock.SetTexture(k_volumeDensity,
+                    GsplatVolumeLighting.EmptyOpacityField);
+                m_propertyBlock.SetVector(k_volumeBoundsMin, Vector4.zero);
+                m_propertyBlock.SetVector(k_volumeBoundsMax, Vector4.one);
+                m_propertyBlock.SetVector(k_volumeBoundsInvSize, Vector4.one);
+                m_propertyBlock.SetVector(k_volumeLightingParams, Vector4.zero);
+                m_propertyBlock.SetVector(k_volumeOcclusionParams, Vector4.zero);
+                m_propertyBlock.SetVector(k_volumeAmbientColor, Vector4.zero);
+                m_propertyBlock.SetInteger(k_volumeLightCount, 0);
+                m_propertyBlock.SetVectorArray(k_volumeLightColors,
+                    s_emptyVolumeLightVectors);
+                m_propertyBlock.SetVectorArray(k_volumeLightPositions,
+                    s_emptyVolumeLightPositions);
+                m_propertyBlock.SetVectorArray(k_volumeLightDirections,
+                    s_emptyVolumeLightVectors);
+                m_propertyBlock.SetVectorArray(k_volumeLightSpotParams,
+                    s_emptyVolumeLightVectors);
+                m_propertyBlock.SetMatrix(k_volumeNormalMatrix, Matrix4x4.identity);
+                m_propertyBlock.SetMatrix(k_volumeWorldToLocal, Matrix4x4.identity);
+            }
             if (relighting && relighting.IsReady)
             {
                 m_propertyBlock.SetTexture(k_relightMap, relighting.RelightingTexture);

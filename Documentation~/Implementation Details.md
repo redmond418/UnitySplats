@@ -69,6 +69,14 @@ The vertex shader:
 
 The fragment shader evaluates the Gaussian exponential falloff, discards pixels outside the ellipse or below the alpha threshold, and outputs premultiplied alpha. `GammaToLinear` converts splat RGB before output and is enabled by default. A hidden serialized migration marker upgrades renderers created by earlier package versions once, while still allowing the option to be disabled afterward.
 
+### Lighting comparison paths
+
+The user-facing `GsplatGaussianRelighting` component owns one mode selector and defaults to Volume. Its inherited controller retains separate serialized settings for both paths. Proxy Mesh mode assigns an aligned renderer child and uses `GsplatProxyRelighting` as a compatibility backend to configure a Lit proxy and shared `GsplatRelighting` capture camera; each splat renderer samples that camera texture after its source color has been evaluated. The backend is hidden from the Add Component menu, but existing scenes containing it remain valid.
+
+`GsplatVolumeLighting` is the proxy-free alternative. At draw time the vertex shader selects the rotated axis belonging to the Gaussian's smallest scale as its surfel normal, flips that normal toward the current camera, and evaluates ambient fill plus as many as four automatically selected directional, point, or spot lights. Local lights use smooth Unity-style inverse-square/range attenuation; automatic selection can be replaced by a single-light override for debugging. The component builds an R8 3D opacity field by trilinearly accumulating each source Gaussian's activated alpha into asset-local voxels. A bounded vertex-stage ray march toward each shadow-casting light composites that opacity into a soft visibility term. Lighting is evaluated once per generated quad vertex rather than per fragment.
+
+The selected mode prevents double-lighting while retaining the inactive configuration. Switching to Proxy Mesh disables volume shader data; switching to Volume disables the owned proxy binding without deleting it. Disabling the unified controller restores a preserved legacy proxy binding. Because the opacity texture is renderer-local and a globally merged draw cannot select a different 3D texture per packed renderer ID, the global sorter deliberately returns to independent draws while Volume mode is active.
+
 ## Bounds and editor integration
 
 Every imported `GsplatAsset` stores local-space bounds. `GsplatScenePicker` renders those transformed bounds into Unity's editor-only GPU picking buffer and retains a ray/bounds fallback for classic `PickGameObject` calls. This allows an otherwise geometry-less splat GameObject to be selected without a collider while preserving Unity's filtering, depth testing, cycling, and multi-selection behavior.

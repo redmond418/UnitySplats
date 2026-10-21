@@ -1,6 +1,6 @@
 # UnitySplats
 
-[![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.0.0-blue.svg)](./CHANGELOG.md)
 [![Unity](https://img.shields.io/badge/Unity-6000.0%2B-black.svg)](https://unity.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE.md)
 
@@ -162,6 +162,19 @@ In the Scene view, click anywhere inside a splat's transformed asset bounds to s
 When two or more Spark renderers overlap, leave **Enable Cross-Renderer Sorting** enabled in `Project Settings > Gsplat`. On supported Vulkan, Direct3D 12, and Metal devices this creates one shared per-splat depth order, preventing whole captures from switching in front of one another as the camera moves. The portable CPU sorter used by OpenGL, WebGL, Direct3D 11, and unsupported GPU configurations retains separate draw calls and cannot provide the true merged order.
 
 Most 3DGS content is trained in gamma space. `Gamma To Linear` is enabled by default on `GsplatRenderer`; disable it when the source colors are already authored for the project's linear workflow. Conversion before alpha blending can otherwise reduce visual accuracy.
+
+## Compare Gaussian lighting modes
+
+![Red and blue point lights moving around a Gaussian splat capture, relit in real time by Gaussian Relighting in Volume mode](Documentation~/Images/volume-relighting.gif)
+
+Add **Gaussian Relighting** to the same GameObject as `GsplatRenderer`, then choose its **Mode**. **Volume** is the default; the same component preserves the settings for both paths when the mode changes:
+
+- **Volume:** automatically combines the strongest active directional, point, and spot lights affecting the renderer (up to four), with Unity-style inverse-square and range falloff for local lights. It treats each Gaussian as a surfel, uses the thinnest rotated ellipsoid axis as a two-sided normal, and ray-marches a compact opacity field for soft self-occlusion. No mesh, manual light assignment, or extra camera is required. Single Override remains available when one light needs to be isolated.
+- **Proxy Mesh:** assign an aligned `MeshRenderer` or `SkinnedMeshRenderer` child. The inspector automatically installs the preserved proxy backend, neutral Lit material, dedicated layer, source-camera exclusion, and screen-space capture. This is the existing proxy relighting implementation, now selected through the unified component.
+
+Switching **Mode** never deletes the other mode's setup. In Volume mode, `Blend` crossfades between the captured appearance and the directly lit result; `Shadow Strength`, `Shadow Steps`, and `Shadow Bias` control opacity-derived self-occlusion. Use **Rebuild Gaussian Opacity Field** after replacing or permanently editing the source asset. Disabling the unified component still allows a preserved legacy proxy binding to act as a fallback.
+
+The opacity texture belongs to one renderer, so selecting Volume mode temporarily falls back from cross-renderer merged sorting to independent draws. Animated skinning transforms the estimated surfel normals, but the opacity field remains in the source asset's local frame; rebuild it after baking permanent deformation into the asset.
 
 ### Unpacked SOG
 

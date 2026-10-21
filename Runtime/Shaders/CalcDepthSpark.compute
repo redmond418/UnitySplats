@@ -5,6 +5,9 @@
 
 #pragma kernel CalcDepthSpark
 
+#define GSPLAT_SKINNING_POSITION_ONLY
+#include "GsplatSkinning.hlsl"
+
 uint _SplatCount;
 float4x4 _MatrixMV;
 StructuredBuffer<uint4> _PackedSplatsBuffer;
@@ -18,8 +21,10 @@ void CalcDepthSpark(uint3 id : SV_DispatchThreadID)
     if (idx >= _SplatCount)
         return;
 
-    uint4 word = _PackedSplatsBuffer[_OrderBuffer[idx]];
+    uint sourceId = _OrderBuffer[idx];
+    uint4 word = _PackedSplatsBuffer[sourceId];
     float3 pos = float3(f16tof32(word.y & 0xffffu), f16tof32((word.y >> 16u) & 0xffffu), f16tof32(word.z & 0xffffu));
+    GsplatApplySkinningPosition(sourceId, pos);
     pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
     _DepthBuffer[idx] = pos.z;
 }

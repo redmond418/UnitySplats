@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-21
+
+### Added
+
+- Merged proxy-mesh and volume relighting into one root-level **Gaussian Relighting** component with a **Volume** (default) / **Proxy Mesh** mode selector. The existing proxy binding remains as a hidden compatibility backend and is not removed from old scenes.
+- Added the proxy-free **Volume** mode, which derives a two-sided surfel normal from each Gaussian's thinnest rotated axis, automatically combines up to four affecting directional/point/spot lights, and estimates soft self-occlusion through a renderer-local opacity field. Local lights use Unity-style inverse-square and range attenuation; an optional single-light override supports focused comparisons.
+- Added a rebuildable opacity-field inspector and editor tests for the unified lighting component. Existing proxy-mesh Gaussian Relighting remains available through Proxy Mesh mode and as a disabled-controller fallback.
+
+### Fixed
+
+- Fixed Volume relighting re-scanning every splat and allocating a new opacity volume on every frame when its opacity field could not be built (for example an asset without CPU-side splat data or a non-finite splat center). A failed build is now kept until its inputs change, and lighting continues without self-occlusion instead of turning off.
+- Reduced Volume relighting memory: the opacity field is built in native scratch memory that is freed immediately (previously up to 18 MB of managed garbage per rebuild), smoothing runs in place, and renderers that draw the same asset with the same field settings share one 3D texture.
+- Reduced Volume relighting GPU cost: lights that do not reach a splat no longer march its shadow ray, the march stops once a ray is fully occluded, opacity texels decode without a per-sample `log()`, and per-renderer constants are computed on the CPU. Devices without R8 3D-texture support fall back to lighting without self-occlusion.
+
 ## [1.2.0] - 2026-08-18
 
 ### Fixed
@@ -77,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed URP compilation on Unity 6000.4 and newer, where the legacy `ScriptableRenderPass.Execute` override was removed in favor of RenderGraph.
 - Fixed Project-to-Hierarchy drag-and-drop on Unity 6000.4 and newer by using the 64-bit `EntityId` handler instead of the obsolete 32-bit `InstanceID` delegate.
 
-[unreleased]: https://github.com/arloopa/UnitySplats/compare/v1.2.0...HEAD
+[unreleased]: https://github.com/arloopa/UnitySplats/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/arloopa/UnitySplats/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/arloopa/UnitySplats/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/arloopa/UnitySplats/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/arloopa/UnitySplats/compare/v1.0.0...v1.0.1

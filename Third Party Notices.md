@@ -42,6 +42,14 @@ The packed Gaussian representation and related implementation concepts are deriv
 - License: MIT
 - Copyright: Copyright (c) 2025 WORLD LABS TECHNOLOGIES, INC.
 
+## Splatlight behavior reference
+
+The proxy-free lighting feature was independently implemented after studying Splatlight 1.0.71's documented behavior and its use of Gaussian orientation/opacity for surface response and self-shadowing. UnitySplats does not include or copy Splatlight source code; it uses its own opacity-volume implementation, API, shaders, and naming.
+
+- Product: https://superhivemarket.com/products/splatlight
+- License of the reviewed Blender add-on: GPL-3.0-or-later
+- Copyright: Copyright (c) 2026 Javier Herrera
+
 ## Niantic SPZ
 
 SPZ container and attribute decoding follows the Niantic SPZ specification and Unity SPZ implementation lineage.

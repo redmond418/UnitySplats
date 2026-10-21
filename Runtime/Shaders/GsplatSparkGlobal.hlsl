@@ -11,7 +11,9 @@
 #define GSPLAT_SPARK_GLOBAL_INCLUDED
 
 #include "Gsplat.hlsl"
+#define GSPLAT_DISABLE_SKINNING
 #include "GsplatSpark.hlsl"
+#undef GSPLAT_DISABLE_SKINNING
 
 // Global concatenated data buffers (sub-allocated by renderer at registration time).
 StructuredBuffer<uint4>    _GlobalPackedBuffer;

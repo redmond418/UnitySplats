@@ -23,6 +23,13 @@ namespace Gsplat
             CutoutsEveryNSorts,
         }
 
+        public enum GsplatDeformationSource
+        {
+            Automatic,
+            ManualRig,
+            ProxyMesh,
+        }
+
         [Tooltip("The imported or runtime-created Gaussian splat asset rendered by this component.")]
         public GsplatAsset GsplatAsset;
 
@@ -60,6 +67,10 @@ namespace Gsplat
             "Recalculates the renderer bounds after compute cutouts so Unity can cull the surviving splats more tightly. This is costly when cutouts move frequently.")]
         public bool CutoutsUpdateBounds = true;
 
+        [Tooltip(
+            "Selects how animated Gaussian positions are produced. Automatic prefers an active manual rig, then an active live proxy-mesh animator.")]
+        public GsplatDeformationSource DeformationSource = GsplatDeformationSource.Automatic;
+
         // Retained only so scenes authored with the earlier camera-assignment workflow continue
         // to render. New content discovers GsplatProxyRelighting directly on a proxy child.
         [FormerlySerializedAs("RelightingEnabled")]
@@ -76,6 +87,9 @@ namespace Gsplat
         uint[] m_activeSourceIds;
         GsplatAsset m_activeRangesAsset;
         GsplatProxyRelighting m_proxyRelighting;
+        GsplatVolumeLighting m_volumeLighting;
+        GsplatRig m_rig;
+        GsplatProxyAnimator m_proxyAnimator;
 
         sealed class ActiveRangeOffsetComparer : IComparer<GsplatActiveRange>
         {
@@ -111,6 +125,9 @@ namespace Gsplat
         // IGsplat global-merge members: expose per-renderer GPU buffers for the global sorter.
         public GsplatResource GsplatResource => m_renderer?.GsplatResource;
         public byte SHBands => GsplatAsset?.SHBands ?? 0;
+        internal bool HasActiveSkinningAnimation =>
+            ResolveSkinningSource()?.IsActivelyAnimating == true;
+        internal bool HasActiveVolumeLighting => ResolveVolumeLighting()?.IsActive == true;
 
         /// <summary>
         /// Gets the active camera-level relighting source for this renderer.
@@ -126,6 +143,23 @@ namespace Gsplat
             out float brightness,
             out float background)
         {
+            GsplatVolumeLighting unified = ResolveVolumeLighting();
+            if (unified && unified.isActiveAndEnabled)
+            {
+                if (unified.TryGetProxyRelightingSource(out relighting, out blend,
+                        out brightness, out background))
+                    return true;
+
+                // The selected unified mode owns the decision even when it is not ready yet. A
+                // missing proxy assignment must not silently activate some other child binding,
+                // and Volume mode must never stack with proxy capture.
+                relighting = null;
+                blend = 0f;
+                brightness = 0f;
+                background = 1f;
+                return false;
+            }
+
             GsplatProxyRelighting proxy = ResolveProxyRelighting();
             if (proxy && proxy.TryGetRelightingSource(out relighting))
             {
@@ -154,6 +188,49 @@ namespace Gsplat
             if (m_proxyRelighting && m_proxyRelighting.transform == transform)
                 m_proxyRelighting = null;
             return m_proxyRelighting;
+        }
+
+        GsplatVolumeLighting ResolveVolumeLighting()
+        {
+            if (m_volumeLighting && m_volumeLighting.gameObject == gameObject)
+                return m_volumeLighting;
+            m_volumeLighting = GetComponent<GsplatVolumeLighting>();
+            return m_volumeLighting;
+        }
+
+        GsplatRig ResolveRig()
+        {
+            if (m_rig && m_rig.gameObject == gameObject)
+                return m_rig;
+            m_rig = GetComponent<GsplatRig>();
+            return m_rig;
+        }
+
+        GsplatProxyAnimator ResolveProxyAnimator()
+        {
+            if (m_proxyAnimator && m_proxyAnimator.gameObject == gameObject)
+                return m_proxyAnimator;
+            m_proxyAnimator = GetComponent<GsplatProxyAnimator>();
+            return m_proxyAnimator;
+        }
+
+        GsplatSkinningSource ResolveSkinningSource()
+        {
+            GsplatRig rig = ResolveRig();
+            GsplatProxyAnimator proxyAnimator = ResolveProxyAnimator();
+            switch (DeformationSource)
+            {
+                case GsplatDeformationSource.ManualRig:
+                    return rig;
+                case GsplatDeformationSource.ProxyMesh:
+                    return proxyAnimator;
+                default:
+                    if (rig && rig.IsActivelyAnimating)
+                        return rig;
+                    if (proxyAnimator && proxyAnimator.IsActivelyAnimating)
+                        return proxyAnimator;
+                    return rig ? rig : proxyAnimator;
+            }
         }
 
         public uint RemainingCount
@@ -213,7 +290,8 @@ namespace Gsplat
         [Tooltip("Number of completed depth sorts between compute-cutout refreshes.")]
         [HideInInspector] public uint CutoutsRefreshRate = 1;
 
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) =>
+            m_renderer.ComputeDepth(cmd, matrixMv, ResolveSkinningSource());
 
         /// <summary>Refreshes async-upload/range intersection immediately before centralized drawing.</summary>
         public void PrepareForSortAndDraw()
@@ -230,17 +308,26 @@ namespace Gsplat
         {
             if (!Valid)
                 return;
+            GsplatSkinningSource skinning = ResolveSkinningSource();
+            GsplatVolumeLighting volumeLighting = ResolveVolumeLighting();
+            if (volumeLighting && !volumeLighting.IsActive)
+                volumeLighting = null;
+            if (skinning && skinning.IsActivelyAnimating)
+                m_renderer.m_bounds = skinning.CalculateLocalBounds(GsplatAsset.Bounds);
             if (!TryGetActiveRelighting(out var relighting, out float relightBlend,
                     out float relightBrightness, out float relightBackground))
                 relighting = null;
             m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
                 1.0f - SplatDownscaleFactor, RenderOrder, relighting,
-                relightBlend, relightBrightness, relightBackground);
+                relightBlend, relightBrightness, relightBackground, skinning, volumeLighting);
         }
 
         void OnEnable()
         {
             m_proxyRelighting = null;
+            m_volumeLighting = null;
+            m_rig = null;
+            m_proxyAnimator = null;
             GsplatSorter.Instance.RegisterGsplat(this);
             m_prevAsset = null;
         }
@@ -248,6 +335,7 @@ namespace Gsplat
         void OnTransformChildrenChanged()
         {
             m_proxyRelighting = null;
+            m_proxyAnimator = null;
             ForceRefresh();
         }
 
@@ -262,6 +350,24 @@ namespace Gsplat
         {
             m_renderer?.ForceRefresh();
         }
+
+        internal void NotifySkinningChanged()
+        {
+            if (m_renderer == null)
+                return;
+            m_renderer.ComputeSortRequired = true;
+            m_renderer.ForceRefresh();
+        }
+
+        internal void NotifyVolumeLightingChanged()
+        {
+            m_volumeLighting = null;
+            m_renderer?.ForceRefresh();
+            GsplatSorter.Instance.MarkGlobalBuffersDirty();
+        }
+
+        internal GsplatSkinningSnapshot CaptureSkinningSnapshot() =>
+            ResolveSkinningSource()?.CaptureCpuSnapshot();
 
         /// <summary>
         /// Activates the exact union of the supplied half-open source ranges. Empty input means

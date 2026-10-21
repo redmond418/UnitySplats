@@ -5,6 +5,7 @@
 #define GSPLAT_SPARK_INCLUDED
 
 #include "Gsplat.hlsl"
+#include "GsplatSkinning.hlsl"
 #ifdef GSPLAT_VERTEX_TEXTURES
 Texture2D<float4> _PackedSplatsTexture;
 int _PackedSplatsTextureWidth;
@@ -91,15 +92,18 @@ void UnpackSplat(uint4 packedData, out float4 color, out float3 modelCenter, out
 }
 
 bool InitSplatData(SplatSource source, float4x4 modelView, bool antialiased,
-                   out SplatCenter center, out SplatCorner corner, out float4 color)
+                   out SplatCenter center, out SplatCorner corner, out float4 color,
+                   out float3 modelCenter, out float3 modelNormal)
 {
     uint4 packedSplat = LoadPackedSplat(source.id);
-    float3 modelCenter, scale;
+    float3 scale;
     float4 quat;
     UnpackSplat(packedSplat, color, modelCenter, scale, quat);
+    SplatCovariance cov = CalcCovariance(quat, scale);
+    modelNormal = GsplatThinAxisNormal(quat, scale);
+    GsplatApplySkinningSurface(source.id, modelCenter, cov, modelNormal);
     if (!InitCenter(modelView, modelCenter, center))
         return false;
-    SplatCovariance cov = CalcCovariance(quat, scale);
     if (!InitCorner(source, cov, center, antialiased, corner))
         return false;
     if (antialiased)

@@ -60,6 +60,8 @@ Shader "Gsplat/Standard"
             float4 _GsplatCameraRelightPosition;
             float4 _GsplatCameraRelightProjection;
             float4 _GsplatRelightParams;
+
+            #include "GsplatVolumeLighting.hlsl"
             #ifdef GSPLAT_VERTEX_TEXTURES
             Texture2D<float4> _OrderTexture;
 
@@ -106,6 +108,7 @@ Shader "Gsplat/Standard"
             struct v2f
             {
                 float2 uv : TEXCOORD0;
+                float3 volumeLighting : TEXCOORD1;
                 float4 vertex : SV_POSITION;
                 float4 color: COLOR;
                 UNITY_VERTEX_OUTPUT_STEREO
@@ -152,8 +155,10 @@ Shader "Gsplat/Standard"
                 SplatCenter center;
                 SplatCorner corner;
                 float4 color;
+                float3 modelCenter;
+                float3 modelNormal;
                 if (!InitSplatData(source, mul(UNITY_MATRIX_V, _MATRIX_M), _Antialiased != 0,
-                                   center, corner, color))
+                                   center, corner, color, modelCenter, modelNormal))
                     return o;
 
                 if (color.w <= 1.0 / 255.0)
@@ -172,6 +177,7 @@ Shader "Gsplat/Standard"
                 o.vertex = center.proj + float4(corner.offset.x, _ProjectionParams.x * corner.offset.y, 0, 0);
                 o.color = color;
                 o.uv = corner.uv;
+                o.volumeLighting = GsplatEvaluateVolumeLighting(modelCenter, modelNormal);
                 return o;
             }
 
@@ -214,6 +220,9 @@ Shader "Gsplat/Standard"
                         lit.a);
                     color = lerp(color, color * factor, _GsplatRelightParams.x);
                 }
+                if (_GsplatVolumeEnabled != 0)
+                    color = lerp(color, color * i.volumeLighting,
+                                 _GsplatVolumeLightingParams.x);
                 return float4(color * alpha * _Brightness, alpha);
             }
             ENDHLSL

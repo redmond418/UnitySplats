@@ -84,26 +84,40 @@ namespace Gsplat
             public readonly uint[] SourceIds;
             public readonly int Count;
             public readonly int Generation;
+            public readonly GsplatSkinningSnapshot Skinning;
             public readonly float M20;
             public readonly float M21;
             public readonly float M22;
             public readonly float M23;
 
             public CpuSortRequest(Vector3[] centers, uint[] sourceIds, int count, int generation,
-                Matrix4x4 matrixMv)
+                Matrix4x4 matrixMv, GsplatSkinningSnapshot skinning)
             {
                 Centers = centers;
                 SourceIds = sourceIds;
                 Count = count;
                 Generation = generation;
+                Skinning = skinning;
                 M20 = matrixMv.m20;
                 M21 = matrixMv.m21;
                 M22 = matrixMv.m22;
                 M23 = matrixMv.m23;
             }
 
-            public float Depth(Vector3 center) =>
-                M20 * center.x + M21 * center.y + M22 * center.z + M23;
+            // Keep the non-deformed construction path stable for tests and package users that
+            // reflect the CPU fallback implementation for diagnostics.
+            public CpuSortRequest(Vector3[] centers, uint[] sourceIds, int count, int generation,
+                Matrix4x4 matrixMv) : this(centers, sourceIds, count, generation, matrixMv, null)
+            {
+            }
+
+            public float Depth(uint sourceId)
+            {
+                Vector3 center = Centers[sourceId];
+                if (Skinning != null)
+                    center = Skinning.TransformPoint(sourceId, center);
+                return M20 * center.x + M21 * center.y + M22 * center.z + M23;
+            }
 
             public uint SourceId(int selectionIndex) =>
                 SourceIds == null ? (uint)selectionIndex : SourceIds[selectionIndex];
@@ -257,7 +271,8 @@ namespace Gsplat
                 Initialized = false;
             }
 
-            public void QueueCpuSort(Matrix4x4 matrixMv, uint requestedCount, bool force)
+            public void QueueCpuSort(Matrix4x4 matrixMv, uint requestedCount, bool force,
+                GsplatSkinningSnapshot skinning)
             {
                 if (m_usesGpuSort || m_disposed || m_cpuCenters == null)
                     return;
@@ -272,7 +287,7 @@ namespace Gsplat
                     return;
 
                 m_pendingCpuRequest = new CpuSortRequest(m_cpuCenters, m_activeSourceIds, (int)count,
-                    m_cpuGeneration, matrixMv);
+                    m_cpuGeneration, matrixMv, skinning);
                 m_hasPendingCpuRequest = true;
             }
 
@@ -405,6 +420,7 @@ namespace Gsplat
         readonly HashSet<UnityEngine.Object> m_warnedGlobalLayer = new();
         readonly HashSet<UnityEngine.Object> m_warnedGlobalRenderOrder = new();
         readonly HashSet<UnityEngine.Object> m_warnedGlobalRelightingSource = new();
+        readonly HashSet<UnityEngine.Object> m_warnedGlobalVolumeLighting = new();
         bool m_warnedGlobalCapacity;
         readonly Dictionary<GsplatAsset, CpuCenterCache> m_cpuCenterCaches = new();
         GsplatSortPass m_sortPass;
@@ -485,6 +501,7 @@ namespace Gsplat
                 m_warnedGlobalLayer.Remove(obj);
                 m_warnedGlobalRenderOrder.Remove(obj);
                 m_warnedGlobalRelightingSource.Remove(obj);
+                m_warnedGlobalVolumeLighting.Remove(obj);
             }
 
             m_globalRenderer.MarkGlobalBuffersDirty();
@@ -580,6 +597,23 @@ namespace Gsplat
                     if (m_warnedGlobalRenderOrder.Add(obj))
                         Debug.LogWarning(
                             $"[GsplatSorter] '{renderer.name}' uses custom Render Order {renderer.RenderOrder}. A single merged draw cannot preserve per-renderer transparent queues, so global sort is disabled for this scene.");
+                    return false;
+                }
+
+                // Animated splats read renderer-owned skin buffers. The global path currently
+                // concatenates only immutable SPARK buffers, so keep animated renderers on their
+                // individual draw path where both deformation and sorting share the same bones.
+                if (gs is GsplatRenderer { HasActiveSkinningAnimation: true })
+                    return false;
+
+                // Each mesh-free lighting component owns a different 3D opacity texture. A
+                // single merged draw cannot bind one renderer-local volume per packed ID, so
+                // retain correct lighting by drawing these renderers independently.
+                if (gs is GsplatRenderer { HasActiveVolumeLighting: true } volumeRenderer)
+                {
+                    if (m_warnedGlobalVolumeLighting.Add(obj))
+                        Debug.LogWarning(
+                            $"[GsplatSorter] '{volumeRenderer.name}' uses Gaussian Relighting in Volume mode. Its renderer-local opacity field is not compatible with one merged draw, so cross-renderer sorting falls back to individual draws while Volume mode is active.");
                     return false;
                 }
 
@@ -822,7 +856,7 @@ namespace Gsplat
                 var forceSort = gs.ComputeSortRequired || !res.Initialized || cameraChanged;
                 if (forceSort || countChanged)
                     res.QueueCpuSort(matrixV * gs.transform.localToWorldMatrix, gs.RemainingCount,
-                        forceSort);
+                        forceSort, (gs as GsplatRenderer)?.CaptureSkinningSnapshot());
                 res.UpdateCpuWork();
             }
         }
@@ -1092,7 +1126,7 @@ namespace Gsplat
 
         static int DepthDigit(CpuSortRequest request, uint sourceId, int shift)
         {
-            var depth = request.Depth(request.Centers[sourceId]);
+            var depth = request.Depth(sourceId);
             // Invalid centers are rejected by package importers, but custom assets can still
             // provide NaNs. Sort them to the near/end side instead of allowing NaN sign bits to
             // place them unpredictably among valid splats.

@@ -105,6 +105,20 @@ SplatCovariance CalcCovariance(float4 quat, float3 scale)
     return cov;
 }
 
+// Treat each Gaussian as a surfel for direct lighting. The ellipsoid's thinnest
+// rotated axis is the most stable available surface-normal estimate and matches
+// the plane spanned by its two widest axes. The sign is intentionally left
+// unoriented; the lighting path flips it toward the current camera.
+float3 GsplatThinAxisNormal(float4 quat, float3 scale)
+{
+    float3x3 rotation = QuatToMat3(quat);
+    if (scale.x <= scale.y && scale.x <= scale.z)
+        return normalize(rotation[0]);
+    if (scale.y <= scale.z)
+        return normalize(rotation[1]);
+    return normalize(rotation[2]);
+}
+
 // calculate the clip-space offset from the center for this gaussian
 bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter center,
                 bool antialiased, out SplatCorner corner)

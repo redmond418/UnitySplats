@@ -5,6 +5,7 @@
 #define GSPLAT_UNCOMPRESSED_INCLUDED
 
 #include "Gsplat.hlsl"
+#include "GsplatSkinning.hlsl"
 #ifdef GSPLAT_VERTEX_TEXTURES
 Texture2D<float4> _PositionTexture;
 Texture2D<float4> _ScaleTexture;
@@ -18,16 +19,15 @@ StructuredBuffer<float4> _ColorBuffer;
 #endif
 
 bool InitSplatData(SplatSource source, float4x4 modelView, bool antialiased,
-                   out SplatCenter center, out SplatCorner corner, out float4 color)
+                   out SplatCenter center, out SplatCorner corner, out float4 color,
+                   out float3 modelCenter, out float3 modelNormal)
 {
     #ifdef GSPLAT_VERTEX_TEXTURES
     int3 textureCoord = int3(GsplatLinearTextureCoord(source.id, _GsplatTextureWidth), 0);
-    float3 modelCenter = _PositionTexture.Load(textureCoord).xyz;
+    modelCenter = _PositionTexture.Load(textureCoord).xyz;
     #else
-    float3 modelCenter = _PositionBuffer[source.id].xyz;
+    modelCenter = _PositionBuffer[source.id].xyz;
     #endif
-    if (!InitCenter(modelView, modelCenter, center))
-        return false;
     #ifdef GSPLAT_VERTEX_TEXTURES
     float4 quat = _RotationTexture.Load(textureCoord);
     float3 scale = _ScaleTexture.Load(textureCoord).xyz;
@@ -36,6 +36,10 @@ bool InitSplatData(SplatSource source, float4x4 modelView, bool antialiased,
     float3 scale = _ScaleBuffer[source.id].xyz;
     #endif
     SplatCovariance cov = CalcCovariance(quat, scale);
+    modelNormal = GsplatThinAxisNormal(quat, scale);
+    GsplatApplySkinningSurface(source.id, modelCenter, cov, modelNormal);
+    if (!InitCenter(modelView, modelCenter, center))
+        return false;
     if (!InitCorner(source, cov, center, antialiased, corner))
         return false;
     #ifdef GSPLAT_VERTEX_TEXTURES
