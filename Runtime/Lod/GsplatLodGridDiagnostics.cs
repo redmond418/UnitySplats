@@ -9,6 +9,7 @@ using UnityEngine;
 
 namespace Gsplat
 {
+    /// <summary>Optional Play Mode diagnostics for a GsplatLodTileGrid. Not required for runtime rendering.</summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(-500)]
     public sealed class GsplatLodGridDiagnostics : MonoBehaviour
@@ -57,6 +58,11 @@ namespace Gsplat
         [SerializeField] int m_peakActiveSplatCount;
         [SerializeField] int m_residentSplatCount;
         [SerializeField] int m_loadedFileCount;
+        [SerializeField] int m_budgetVisibleTileCount;
+        [SerializeField] int m_budgetVisibleLeafCount;
+        [SerializeField] long m_budgetVisibleMinimumSplatDemand;
+        [SerializeField] long m_budgetVisibleOptimalSplatDemand;
+        [SerializeField] int m_budgetVisibleActiveSplatAllowance;
         [SerializeField] int m_predictiveTileCount;
         [SerializeField] int m_predictiveLeafCount;
         [SerializeField] long m_predictivePrefetchDemandSplats;
@@ -207,6 +213,11 @@ namespace Gsplat
             m_activeSplatCount = active;
             m_residentSplatCount = resident;
             m_loadedFileCount = files;
+            m_budgetVisibleTileCount = Grid.VisibleTileCount;
+            m_budgetVisibleLeafCount = Grid.VisibleLeafCount;
+            m_budgetVisibleMinimumSplatDemand = Grid.VisibleMinimumSplatDemand;
+            m_budgetVisibleOptimalSplatDemand = Grid.VisibleOptimalSplatDemand;
+            m_budgetVisibleActiveSplatAllowance = Grid.VisibleActiveSplatAllowance;
             m_predictiveTileCount = predictiveTiles;
             m_predictiveLeafCount = predictiveLeaves;
             m_predictivePrefetchDemandSplats = predictiveDemand;

@@ -66,22 +66,22 @@ namespace Gsplat
         bool m_hasPreviousCameraPose;
         bool m_captureDiagnosticTimings;
 
-        public IReadOnlyList<GsplatLodStreamer> Tiles => m_streamers;
-        public int VisibleTileCount { get; private set; }
-        public int VisibleLeafCount { get; private set; }
-        public long VisibleMinimumSplatDemand { get; private set; }
-        public long VisibleOptimalSplatDemand { get; private set; }
-        public int VisibleActiveSplatAllowance { get; private set; }
-        public int PredictiveTileCount { get; private set; }
-        public int PredictiveLeafCount { get; private set; }
-        public long PredictivePrefetchDemandSplats { get; private set; }
-        public long PredictivePrefetchRequestedSplats { get; private set; }
-        public Vector3 MeasuredCameraVelocity => m_smoothedCameraVelocity;
-        public Vector3 MeasuredAngularVelocity => m_smoothedCameraAngularVelocity;
-        public bool RecentredThisFrame { get; private set; }
-        public Vector3 LastRecenteringDelta { get; private set; }
-        public float LastRecenterCpuMilliseconds { get; private set; }
-        public float LastGridControllerCpuMilliseconds { get; private set; }
+        internal IReadOnlyList<GsplatLodStreamer> Tiles => m_streamers;
+        internal int VisibleTileCount { get; private set; }
+        internal int VisibleLeafCount { get; private set; }
+        internal long VisibleMinimumSplatDemand { get; private set; }
+        internal long VisibleOptimalSplatDemand { get; private set; }
+        internal int VisibleActiveSplatAllowance { get; private set; }
+        internal int PredictiveTileCount { get; private set; }
+        internal int PredictiveLeafCount { get; private set; }
+        internal long PredictivePrefetchDemandSplats { get; private set; }
+        internal long PredictivePrefetchRequestedSplats { get; private set; }
+        internal Vector3 MeasuredCameraVelocity => m_smoothedCameraVelocity;
+        internal Vector3 MeasuredAngularVelocity => m_smoothedCameraAngularVelocity;
+        internal bool RecentredThisFrame { get; private set; }
+        internal Vector3 LastRecenteringDelta { get; private set; }
+        internal float LastRecenterCpuMilliseconds { get; private set; }
+        internal float LastGridControllerCpuMilliseconds { get; private set; }
 
         void Awake()
         {
