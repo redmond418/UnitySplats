@@ -1,8 +1,6 @@
 // PlayCanvas-compatible Gaussian-splat LOD streaming for Unity.
 // SPDX-License-Identifier: MIT
 
-#if false // Temporarily disabled: lod-meta.json support is not part of the current public release.
-
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -12,6 +10,7 @@ using System.Threading.Tasks;
 using Gsplat.Formats;
 using UnityEngine;
 using UnityEngine.Networking;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace Gsplat
 {
@@ -24,6 +23,10 @@ namespace Gsplat
     [DefaultExecutionOrder(100)]
     public sealed class GsplatLodStreamer : MonoBehaviour
     {
+        // A single unique SOG decode at a time keeps many tiled streamers from saturating
+        // the worker pool. Identical URIs join the same in-flight cache entry below.
+        static readonly SemaphoreSlim s_sharedAssetLoadGate = new(1, 1);
+
         [Header("Manifest")]
         public GsplatLodManifestAsset ManifestAsset;
         [Tooltip("Optional runtime lod-meta.json URI. Relative values resolve under StreamingAssets.")]
@@ -40,6 +43,8 @@ namespace Gsplat
         [Min(1f)] public float LodBehindPenalty = 1f;
         [Min(0)] public int LodUnderfillLimit;
         [Range(1, 120)] public int LodUpdateIntervalFrames = 10;
+        // A tile grid assigns a phase so its streamers do not evaluate on the same frame.
+        [HideInInspector] public int LodUpdatePhaseFrames = -1;
 
         [Header("Streaming")]
         [Range(1, 16)] public int MaxConcurrentLoads = 2;
@@ -49,6 +54,13 @@ namespace Gsplat
         [Min(0f)] public float FailureCooldownSeconds = 5f;
         public bool AsyncGpuUpload = true;
 
+        [Header("Visibility and budgets")]
+        public bool FrustumCulling = true;
+        [Min(0f)] public float FrustumPadding = 0.5f;
+        [Range(0f, 0.49f)] public float LodHysteresis = 0.1f;
+        [Min(0)] public int MaxActiveSplats = 1_500_000;
+        [Min(0f)] public float MaxEstimatedResidentGpuMB = 1536f;
+
         [Header("Rendering")]
         [Range(0, 4)] public int SHDegree = 3;
         [Min(0f)] public float Brightness = 1f;
@@ -57,6 +69,26 @@ namespace Gsplat
         public uint RenderOrder;
 
         public bool IsInitialized => m_manifest != null;
+        public int VisibleLeafCount { get; private set; }
+        public int VisibleMinimumActiveSplatCount { get; private set; }
+        public int VisibleOptimalActiveSplatCount { get; private set; }
+        public int PredictedVisibleLeafCount { get; private set; }
+        public long PredictivePrefetchDemandSplats { get; private set; }
+        public long PredictivePrefetchRequestedSplats { get; private set; }
+        public int ActiveSplatCount { get; private set; }
+        public int LodEvaluationCount { get; private set; }
+        public int ActiveRangeUpdateCount { get; private set; }
+        public float LastLodEvaluationCpuMilliseconds { get; private set; }
+        public long LastLodEvaluationAllocatedBytes { get; private set; }
+        public float LastActiveRangeUpdateCpuMilliseconds { get; private set; }
+        public long LastActiveRangeUpdateAllocatedBytes { get; private set; }
+        public float LastGpuUploadPollCpuMilliseconds { get; private set; }
+        public long LastGpuUploadPollAllocatedBytes { get; private set; }
+        public float LastLoadQueuePumpCpuMilliseconds { get; private set; }
+        public long LastLoadQueuePumpAllocatedBytes { get; private set; }
+        public float LastCooldownTickCpuMilliseconds { get; private set; }
+        public int ResidentSplatCount => GetResidentSplatCount();
+        public long EstimatedResidentGpuBytes => GetEstimatedResidentGpuBytes();
         public int LoadedFileCount
         {
             get
@@ -111,6 +143,21 @@ namespace Gsplat
             }
         }
 
+        readonly struct LodCandidate : IComparable<LodCandidate>
+        {
+            public readonly float Distance;
+            public readonly int LeafIndex;
+
+            public LodCandidate(float distance, int leafIndex)
+            {
+                Distance = distance;
+                LeafIndex = leafIndex;
+            }
+
+            // Descending distance: the least important visible leaves lose detail first.
+            public int CompareTo(LodCandidate other) => other.Distance.CompareTo(Distance);
+        }
+
         GsplatLodManifest m_manifest;
         FileSlot[] m_slots;
         readonly List<FileSlot> m_uniqueSlots = new();
@@ -124,12 +171,23 @@ namespace Gsplat
         readonly HashSet<int> m_activeRangeFiles = new();
         readonly HashSet<int> m_previousActiveRangeFiles = new();
         readonly HashSet<int> m_filesToApply = new();
+        readonly List<LodCandidate> m_budgetCandidates = new();
+        readonly List<LodCandidate> m_predictiveCandidates = new();
+        readonly Plane[] m_frustumPlanes = new Plane[6];
+        readonly Plane[] m_predictiveFrustumPlanes = new Plane[6];
         CancellationTokenSource m_lifetime;
         int m_activeLoads;
         int m_sessionGeneration;
         bool m_forceEvaluate;
         bool m_rangesDirty;
         bool m_shuttingDown;
+        bool m_hasPredictiveCameraPose;
+        Vector3 m_predictiveCameraPosition;
+        Quaternion m_predictiveCameraRotation = Quaternion.identity;
+        float m_predictiveFrustumPadding;
+        int m_predictiveLodRefinementLevels;
+        int m_predictivePrefetchSplatBudget;
+        int[] m_predictiveLods;
         int m_lastEvaluationFrame = int.MinValue;
         string m_baseUri;
         SourceCoordinates m_sessionCoordinates = global::Gsplat.SourceCoordinates.Unspecified;
@@ -214,9 +272,18 @@ namespace Gsplat
             m_currentLods = new int[manifest.Leaves.Length];
             m_optimalLods = new int[manifest.Leaves.Length];
             m_desiredLods = new int[manifest.Leaves.Length];
+            m_predictiveLods = new int[manifest.Leaves.Length];
             Array.Fill(m_currentLods, -1);
             Array.Fill(m_optimalLods, -1);
             Array.Fill(m_desiredLods, -1);
+            Array.Fill(m_predictiveLods, -1);
+            VisibleLeafCount = 0;
+            VisibleMinimumActiveSplatCount = 0;
+            VisibleOptimalActiveSplatCount = 0;
+            PredictedVisibleLeafCount = 0;
+            PredictivePrefetchDemandSplats = 0;
+            PredictivePrefetchRequestedSplats = 0;
+            ActiveSplatCount = 0;
             m_forceEvaluate = true;
             m_rangesDirty = true;
             m_lastEvaluationFrame = int.MinValue;
@@ -232,29 +299,106 @@ namespace Gsplat
         void Update()
         {
             if (m_manifest == null || m_shuttingDown) return;
+            long cpuStart = Stopwatch.GetTimestamp();
+            long allocatedStart = GC.GetAllocatedBytesForCurrentThread();
             PollGpuUploads();
+            LastGpuUploadPollCpuMilliseconds = (float)((Stopwatch.GetTimestamp() - cpuStart) * 1000.0 / Stopwatch.Frequency);
+            LastGpuUploadPollAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedStart;
             Camera camera = LodCamera ? LodCamera : Camera.main;
             int interval = Mathf.Max(1, LodUpdateIntervalFrames);
-            if (m_forceEvaluate || Time.frameCount - m_lastEvaluationFrame >= interval)
+            int phase = LodUpdatePhaseFrames < 0 ? -1 : Mathf.Clamp(LodUpdatePhaseFrames, 0, interval - 1);
+            bool phaseDue = phase < 0 || Time.frameCount % interval == phase;
+            if (phaseDue && (m_forceEvaluate || Time.frameCount - m_lastEvaluationFrame >= interval))
             {
                 if (camera) Evaluate(camera);
                 m_lastEvaluationFrame = Time.frameCount;
                 m_forceEvaluate = false;
             }
+            cpuStart = Stopwatch.GetTimestamp();
+            allocatedStart = GC.GetAllocatedBytesForCurrentThread();
             PumpLoadQueue();
+            LastLoadQueuePumpCpuMilliseconds = (float)((Stopwatch.GetTimestamp() - cpuStart) * 1000.0 / Stopwatch.Frequency);
+            LastLoadQueuePumpAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedStart;
+            cpuStart = Stopwatch.GetTimestamp();
             TickCooldowns();
+            LastCooldownTickCpuMilliseconds = (float)((Stopwatch.GetTimestamp() - cpuStart) * 1000.0 / Stopwatch.Frequency);
         }
 
         /// <summary>Forces LOD evaluation on the next Update, useful after changing parameters.</summary>
         public void ForceLodUpdate() => m_forceEvaluate = true;
 
+        /// <summary>Supplies a camera pose extrapolated by the tile grid for low-priority prefetch.</summary>
+        internal void SetPredictiveCameraPose(bool enabled, Vector3 position, Quaternion rotation,
+            float frustumPadding, int lodRefinementLevels, int prefetchSplatBudget)
+        {
+            m_hasPredictiveCameraPose = enabled;
+            m_predictiveCameraPosition = position;
+            m_predictiveCameraRotation = rotation;
+            m_predictiveFrustumPadding = Mathf.Max(0f, frustumPadding);
+            m_predictiveLodRefinementLevels = Mathf.Max(0, lodRefinementLevels);
+            m_predictivePrefetchSplatBudget = Mathf.Max(0, prefetchSplatBudget);
+        }
+
         void Evaluate(Camera camera)
         {
+            long cpuStart = Stopwatch.GetTimestamp();
+            long allocatedStart = GC.GetAllocatedBytesForCurrentThread();
+            ++LodEvaluationCount;
             int maxLod = m_manifest.LodLevels - 1;
             int rangeMin = Mathf.Clamp(LodRangeMin, 0, maxLod);
             int rangeMax = Mathf.Clamp(LodRangeMax, rangeMin, maxLod);
             Vector3 localCameraPosition = transform.InverseTransformPoint(camera.transform.position);
             Vector3 localCameraForward = transform.InverseTransformDirection(camera.transform.forward).normalized;
+
+            if (FrustumCulling)
+                GeometryUtility.CalculateFrustumPlanes(camera, m_frustumPlanes);
+
+            m_budgetCandidates.Clear();
+            VisibleLeafCount = 0;
+            VisibleMinimumActiveSplatCount = 0;
+            VisibleOptimalActiveSplatCount = 0;
+            PredictedVisibleLeafCount = 0;
+            PredictivePrefetchDemandSplats = 0;
+            PredictivePrefetchRequestedSplats = 0;
+            m_predictiveCandidates.Clear();
+            Array.Fill(m_predictiveLods, -1);
+            for (int leafIndex = 0; leafIndex < m_manifest.Leaves.Length; ++leafIndex)
+            {
+                GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
+                if (FrustumCulling && !IsLeafVisible(leaf))
+                {
+                    m_optimalLods[leafIndex] = -1;
+                    m_desiredLods[leafIndex] = -1;
+                    continue;
+                }
+
+                ++VisibleLeafCount;
+                int coarsestAvailable = FindAvailableCoarserLod(leaf, rangeMax, rangeMin);
+                if (coarsestAvailable >= 0)
+                    VisibleMinimumActiveSplatCount += leaf.Lods[coarsestAvailable].Count;
+
+                int optimal = GsplatLodSelector.SelectLod(leaf.Bounds, localCameraPosition,
+                    localCameraForward, camera.fieldOfView, camera.aspect, LodBaseDistance,
+                    LodMultiplier, maxLod, rangeMin, rangeMax, LodBehindPenalty);
+                float effectiveDistance = GsplatLodSelector.GetEffectiveDistance(leaf.Bounds,
+                    localCameraPosition, localCameraForward, camera.fieldOfView, camera.aspect,
+                    LodBehindPenalty);
+                int previous = m_currentLods[leafIndex];
+                if (previous >= 0 && IsLodResident(leaf, previous))
+                    optimal = GsplatLodSelector.ApplyHysteresis(previous, optimal, effectiveDistance,
+                        LodBaseDistance, LodMultiplier, LodHysteresis);
+
+                int desired = SelectDesiredLod(leaf, optimal, maxLod);
+                if (HasLod(leaf, desired))
+                    VisibleOptimalActiveSplatCount += leaf.Lods[desired].Count;
+                m_optimalLods[leafIndex] = optimal;
+                m_desiredLods[leafIndex] = desired;
+                float distance = Vector3.Distance(leaf.Bounds.ClosestPoint(localCameraPosition),
+                    localCameraPosition);
+                m_budgetCandidates.Add(new LodCandidate(distance, leafIndex));
+            }
+
+            ApplyActiveSplatBudget(maxLod);
 
             foreach (FileSlot slot in m_uniqueSlots)
             {
@@ -273,17 +417,15 @@ namespace Gsplat
             for (int leafIndex = 0; leafIndex < m_manifest.Leaves.Length; ++leafIndex)
             {
                 GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
-                int optimal = GsplatLodSelector.SelectLod(leaf.Bounds, localCameraPosition,
-                    localCameraForward, camera.fieldOfView, camera.aspect, LodBaseDistance,
-                    LodMultiplier, maxLod, rangeMin, rangeMax, LodBehindPenalty);
-                int desired = SelectDesiredLod(leaf, optimal, maxLod);
-                m_optimalLods[leafIndex] = optimal;
-                m_desiredLods[leafIndex] = desired;
-
-                MarkLodWanted(leaf, desired, desired * 100 + leafIndex);
-                PrefetchNextLod(leaf, desired, optimal, leafIndex);
-
                 int previousCurrent = m_currentLods[leafIndex];
+                int desired = m_desiredLods[leafIndex];
+                if (desired < 0)
+                {
+                    m_currentLods[leafIndex] = -1;
+                    if (previousCurrent >= 0) m_rangesDirty = true;
+                    continue;
+                }
+
                 int current = previousCurrent;
                 if (!IsLodResident(leaf, current)) current = -1;
 
@@ -293,21 +435,266 @@ namespace Gsplat
                 }
                 else if (current < 0)
                 {
-                    // First-frame fallback: use any already-resident coarse level, and request
-                    // the coarsest legal level so something becomes visible quickly.
                     current = FindResidentCoarserLod(leaf, desired, rangeMax);
-                    int coarse = FindAvailableCoarserLod(leaf, rangeMax, desired);
-                    MarkLodWanted(leaf, coarse, 50_000 + coarse * 100 + leafIndex);
                 }
 
                 m_currentLods[leafIndex] = current;
                 if (current != previousCurrent) m_rangesDirty = true;
-                MarkLodWanted(leaf, current, -1_000 + current * 100 + leafIndex);
             }
+
+            EnforceResidentActiveSplatBudget(rangeMax);
+
+            for (int leafIndex = 0; leafIndex < m_manifest.Leaves.Length; ++leafIndex)
+            {
+                int desired = m_desiredLods[leafIndex];
+                if (desired < 0) continue;
+
+                GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
+                int current = m_currentLods[leafIndex];
+                if (current >= 0)
+                    MarkLodWanted(leaf, current, -1_000 + current * 100 + leafIndex);
+
+                MarkLodWanted(leaf, desired, desired * 100 + leafIndex);
+                if (current < 0)
+                {
+                    // Establish the cheapest coverage first; refine only after it is resident.
+                    int coarse = FindAvailableCoarserLod(leaf, rangeMax, Mathf.Max(desired, rangeMin));
+                    MarkLodWanted(leaf, coarse, -5_000 + coarse * 100 + leafIndex);
+                }
+
+                if (desired == m_optimalLods[leafIndex])
+                    PrefetchNextLod(leaf, desired, m_optimalLods[leafIndex], leafIndex);
+            }
+
+            EvaluatePredictivePrefetch(camera, maxLod, rangeMin, rangeMax);
+
+            ActiveSplatCount = (int)Math.Min(int.MaxValue, GetCurrentActiveSplatCount());
 
             if (m_rangesDirty) ApplyActiveRanges();
             else SyncActiveRendererSettings();
             ReconcileRequests();
+            LastLodEvaluationCpuMilliseconds = (float)((Stopwatch.GetTimestamp() - cpuStart) * 1000.0 / Stopwatch.Frequency);
+            LastLodEvaluationAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedStart;
+        }
+
+        bool IsLeafVisible(GsplatLodLeaf leaf)
+        {
+            return IsLeafVisible(leaf, m_frustumPlanes, FrustumPadding);
+        }
+
+        bool IsLeafVisible(GsplatLodLeaf leaf, Plane[] planes, float padding)
+        {
+            Bounds worldBounds = TransformBounds(leaf.Bounds, transform.localToWorldMatrix);
+            padding = Mathf.Max(0f, padding);
+            if (padding > 0f) worldBounds.Expand(padding * 2f);
+            return GeometryUtility.TestPlanesAABB(planes, worldBounds);
+        }
+
+        void EvaluatePredictivePrefetch(Camera camera, int maxLod, int rangeMin, int rangeMax)
+        {
+            if (!m_hasPredictiveCameraPose || m_predictivePrefetchSplatBudget <= 0 ||
+                m_manifest == null || m_predictiveLods == null)
+                return;
+
+            Matrix4x4 currentCameraTransform =
+                Matrix4x4.TRS(camera.transform.position, camera.transform.rotation, Vector3.one);
+            Matrix4x4 cameraViewConvention = camera.worldToCameraMatrix * currentCameraTransform;
+            Matrix4x4 predictedCameraTransform =
+                Matrix4x4.TRS(m_predictiveCameraPosition, m_predictiveCameraRotation, Vector3.one);
+            Matrix4x4 predictedWorldToCamera = cameraViewConvention * predictedCameraTransform.inverse;
+            GeometryUtility.CalculateFrustumPlanes(camera.projectionMatrix * predictedWorldToCamera,
+                m_predictiveFrustumPlanes);
+
+            Vector3 localCameraPosition = transform.InverseTransformPoint(m_predictiveCameraPosition);
+            Vector3 localCameraForward = transform.InverseTransformDirection(
+                m_predictiveCameraRotation * Vector3.forward).normalized;
+            long fullDemand = 0;
+
+            for (int leafIndex = 0; leafIndex < m_manifest.Leaves.Length; ++leafIndex)
+            {
+                GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
+                if (!IsLeafVisible(leaf, m_predictiveFrustumPlanes,
+                        FrustumPadding + m_predictiveFrustumPadding))
+                    continue;
+
+                ++PredictedVisibleLeafCount;
+                int predictedLod = GsplatLodSelector.SelectLod(leaf.Bounds, localCameraPosition,
+                    localCameraForward, camera.fieldOfView, camera.aspect, LodBaseDistance,
+                    LodMultiplier, maxLod, rangeMin, rangeMax, LodBehindPenalty);
+                m_predictiveLods[leafIndex] = predictedLod;
+                // Current visible leaves already request their live target and one-step
+                // refinement. Predictive traffic is reserved for leaves entering the future view.
+                if (predictedLod < 0 || m_desiredLods[leafIndex] >= 0)
+                    continue;
+
+                bool needsRequest = false;
+                int requestedLod = predictedLod;
+                for (int refinement = 0; refinement <= m_predictiveLodRefinementLevels; ++refinement)
+                {
+                    if (refinement > 0)
+                    {
+                        requestedLod = FindNextFinerLod(leaf, requestedLod - 1, rangeMin);
+                        if (requestedLod < 0) break;
+                    }
+
+                    if (m_desiredLods[leafIndex] == requestedLod ||
+                        m_currentLods[leafIndex] == requestedLod || IsLodResident(leaf, requestedLod))
+                        continue;
+
+                    fullDemand += leaf.Lods[requestedLod].Count;
+                    needsRequest = true;
+                }
+
+                if (needsRequest)
+                {
+                    float distance = Vector3.Distance(leaf.Bounds.ClosestPoint(localCameraPosition),
+                        localCameraPosition);
+                    m_predictiveCandidates.Add(new LodCandidate(distance, leafIndex));
+                }
+            }
+
+            PredictivePrefetchDemandSplats = fullDemand;
+            if (fullDemand <= 0) return;
+
+            // LodCandidate sorts farthest-first for active-budget reduction. Walk it backwards
+            // here so the limited prediction budget warms the nearest future leaves first.
+            m_predictiveCandidates.Sort();
+            int remainingBudget = m_predictivePrefetchSplatBudget;
+            for (int candidateIndex = m_predictiveCandidates.Count - 1;
+                 candidateIndex >= 0 && remainingBudget > 0; --candidateIndex)
+            {
+                int leafIndex = m_predictiveCandidates[candidateIndex].LeafIndex;
+                GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
+                int predictedLod = m_predictiveLods[leafIndex];
+                int requestedLod = predictedLod;
+                for (int refinement = 0; refinement <= m_predictiveLodRefinementLevels; ++refinement)
+                {
+                    if (refinement > 0)
+                    {
+                        requestedLod = FindNextFinerLod(leaf, requestedLod - 1, rangeMin);
+                        if (requestedLod < 0) break;
+                    }
+
+                    if (m_desiredLods[leafIndex] == requestedLod ||
+                        m_currentLods[leafIndex] == requestedLod || IsLodResident(leaf, requestedLod))
+                        continue;
+
+                    int splatCount = leaf.Lods[requestedLod].Count;
+                    if (splatCount > remainingBudget) continue;
+
+                    int priority = 5_000 + refinement * 1_000 + requestedLod * 100 + leafIndex;
+                    MarkLodWanted(leaf, requestedLod, priority);
+                    remainingBudget -= splatCount;
+                    PredictivePrefetchRequestedSplats += splatCount;
+                }
+            }
+        }
+
+        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 localToWorld)
+        {
+            Vector3 center = localBounds.center;
+            Vector3 extents = localBounds.extents;
+            Vector3 first = localToWorld.MultiplyPoint3x4(center + new Vector3(-extents.x, -extents.y, -extents.z));
+            var worldBounds = new Bounds(first, Vector3.zero);
+            for (int corner = 1; corner < 8; ++corner)
+            {
+                Vector3 point = center + new Vector3(
+                    (corner & 1) == 0 ? -extents.x : extents.x,
+                    (corner & 2) == 0 ? -extents.y : extents.y,
+                    (corner & 4) == 0 ? -extents.z : extents.z);
+                worldBounds.Encapsulate(localToWorld.MultiplyPoint3x4(point));
+            }
+            return worldBounds;
+        }
+
+        void ApplyActiveSplatBudget(int maxLod)
+        {
+            long total = 0;
+            for (int i = 0; i < m_desiredLods.Length; ++i)
+            {
+                int lod = m_desiredLods[i];
+                if (HasLod(m_manifest.Leaves[i], lod))
+                    total += m_manifest.Leaves[i].Lods[lod].Count;
+            }
+
+            if (MaxActiveSplats > 0 && total > MaxActiveSplats)
+            {
+                m_budgetCandidates.Sort();
+                foreach (LodCandidate candidate in m_budgetCandidates)
+                {
+                    GsplatLodLeaf leaf = m_manifest.Leaves[candidate.LeafIndex];
+                    int lod = m_desiredLods[candidate.LeafIndex];
+                    while (total > MaxActiveSplats)
+                    {
+                        int next = FindNextCoarserLod(leaf, lod, maxLod);
+                        if (next < 0) break;
+                        total += leaf.Lods[next].Count - leaf.Lods[lod].Count;
+                        lod = next;
+                        m_desiredLods[candidate.LeafIndex] = lod;
+                    }
+                    if (total <= MaxActiveSplats) break;
+                }
+            }
+
+            ActiveSplatCount = (int)Math.Min(int.MaxValue, total);
+        }
+
+        void EnforceResidentActiveSplatBudget(int maxLod)
+        {
+            if (MaxActiveSplats <= 0) return;
+            long total = GetCurrentActiveSplatCount();
+            if (total <= MaxActiveSplats) return;
+
+            m_budgetCandidates.Sort();
+            foreach (LodCandidate candidate in m_budgetCandidates)
+            {
+                int leafIndex = candidate.LeafIndex;
+                GsplatLodLeaf leaf = m_manifest.Leaves[leafIndex];
+                int current = m_currentLods[leafIndex];
+                if (!HasLod(leaf, current)) continue;
+
+                int coarser = FindResidentCoarserLod(leaf, current + 1, maxLod);
+                if (coarser >= 0)
+                {
+                    total += leaf.Lods[coarser].Count - leaf.Lods[current].Count;
+                    m_currentLods[leafIndex] = coarser;
+                }
+                else
+                {
+                    total -= leaf.Lods[current].Count;
+                    m_currentLods[leafIndex] = -1;
+                }
+                m_rangesDirty = true;
+                if (total <= MaxActiveSplats) break;
+            }
+
+            ActiveSplatCount = (int)Math.Max(0, Math.Min(int.MaxValue, total));
+        }
+
+        static int FindNextCoarserLod(GsplatLodLeaf leaf, int current, int max)
+        {
+            for (int lod = current + 1; lod <= max; ++lod)
+                if (HasLod(leaf, lod)) return lod;
+            return -1;
+        }
+
+        static int FindNextFinerLod(GsplatLodLeaf leaf, int current, int min)
+        {
+            for (int lod = current; lod >= min; --lod)
+                if (HasLod(leaf, lod)) return lod;
+            return -1;
+        }
+
+        long GetCurrentActiveSplatCount()
+        {
+            long total = 0;
+            for (int i = 0; i < m_currentLods.Length; ++i)
+            {
+                int lod = m_currentLods[i];
+                GsplatLodLeaf leaf = m_manifest.Leaves[i];
+                if (HasLod(leaf, lod)) total += leaf.Lods[lod].Count;
+            }
+            return total;
         }
 
         int SelectDesiredLod(GsplatLodLeaf leaf, int optimal, int maxLod)
@@ -366,6 +753,9 @@ namespace Gsplat
 
         void ApplyActiveRanges()
         {
+            long cpuStart = Stopwatch.GetTimestamp();
+            long allocatedStart = GC.GetAllocatedBytesForCurrentThread();
+            ++ActiveRangeUpdateCount;
             foreach (int fileIndex in m_activeRangeFiles)
                 m_rangeScratch[fileIndex].Clear();
             m_activeRangeFiles.Clear();
@@ -414,6 +804,8 @@ namespace Gsplat
                 if (m_environment.Renderer.HasActiveRanges)
                     m_environment.Renderer.ClearActiveRanges();
             }
+            LastActiveRangeUpdateCpuMilliseconds = (float)((Stopwatch.GetTimestamp() - cpuStart) * 1000.0 / Stopwatch.Frequency);
+            LastActiveRangeUpdateAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedStart;
         }
 
         static bool RangesEqual(IReadOnlyList<GsplatActiveRange> a, IReadOnlyList<GsplatActiveRange> b)
@@ -580,12 +972,92 @@ namespace Gsplat
                 return priority != 0 ? priority : a.Index.CompareTo(b.Index);
             });
             int limit = Mathf.Max(1, MaxConcurrentLoads);
-            while (m_activeLoads < limit && m_loadQueue.Count != 0)
+            int blocked = 0;
+            while (m_activeLoads < limit && m_loadQueue.Count != 0 && blocked < m_loadQueue.Count)
             {
                 FileSlot slot = m_loadQueue[0];
                 m_loadQueue.RemoveAt(0);
+                if (!TryMakeResidentBudgetRoom(slot))
+                {
+                    m_loadQueue.Add(slot);
+                    ++blocked;
+                    continue;
+                }
+                blocked = 0;
                 BeginLoad(slot);
             }
+        }
+
+        bool TryMakeResidentBudgetRoom(FileSlot requested)
+        {
+            if (MaxEstimatedResidentGpuMB <= 0f) return true;
+            long budget = (long)(MaxEstimatedResidentGpuMB * 1024f * 1024f);
+            long requiredBytes = EstimateGpuBytes(GetManifestSplatCount(requested), 4);
+            if (requiredBytes > budget) return false;
+
+            while (GetEstimatedResidentGpuBytes() + requiredBytes > budget)
+            {
+                FileSlot victim = null;
+                foreach (FileSlot slot in m_uniqueSlots)
+                {
+                    if (slot == requested || slot.Wanted || slot.Status != LoadStatus.Loaded || !slot.Asset)
+                        continue;
+                    if (victim == null || slot.LastWantedTime < victim.LastWantedTime)
+                        victim = slot;
+                }
+                if (victim == null) return false;
+                UnloadSlot(victim);
+            }
+            return true;
+        }
+
+        int GetManifestSplatCount(FileSlot slot)
+        {
+            if (slot == null || slot.Index < 0 || m_manifest == null) return 0;
+            int count = 0;
+            foreach (int index in slot.ManifestIndices)
+                count = Mathf.Max(count, m_manifest.RequiredSplatCounts[index]);
+            return count;
+        }
+
+        long GetEstimatedResidentGpuBytes()
+        {
+            long bytes = 0;
+            foreach (FileSlot slot in m_uniqueSlots)
+            {
+                if (slot.Asset)
+                    bytes += EstimateGpuBytes(slot.Asset.SplatCount, slot.Asset.SHBands);
+                else if (slot.Status == LoadStatus.Loading)
+                    bytes += EstimateGpuBytes(GetManifestSplatCount(slot), 4);
+            }
+
+            if (m_environment != null)
+            {
+                if (m_environment.Asset)
+                    bytes += EstimateGpuBytes(m_environment.Asset.SplatCount, m_environment.Asset.SHBands);
+            }
+            return bytes;
+        }
+
+        int GetResidentSplatCount()
+        {
+            long count = 0;
+            foreach (FileSlot slot in m_uniqueSlots)
+                if (slot.Asset) count += slot.Asset.SplatCount;
+            if (m_environment is { Asset: not null }) count += m_environment.Asset.SplatCount;
+            return (int)Math.Min(int.MaxValue, count);
+        }
+
+        static long EstimateGpuBytes(long splatCount, int shBands)
+        {
+            if (splatCount <= 0) return 0;
+            int attributeBytes = 16;
+            if (shBands > 0) attributeBytes += 8;
+            if (shBands > 1) attributeBytes += 16;
+            if (shBands > 2) attributeBytes += 16;
+            if (shBands > 3) attributeBytes += 24;
+            // Asset attributes + renderer sort buffers + conservative global-merge copy/work arrays.
+            return splatCount * (2L * attributeBytes + 24L);
         }
 
         async void BeginLoad(FileSlot slot)
@@ -604,7 +1076,7 @@ namespace Gsplat
                     slot.LoadCancellation.Token.ThrowIfCancellationRequested();
                     try
                     {
-                        loadedAsset = await LoadGsplatAssetAsync(slot.Uri, slot.LoadCancellation.Token);
+                        loadedAsset = await AcquireGsplatAssetAsync(slot.Uri, slot.LoadCancellation.Token);
                         break;
                     }
                     catch (OperationCanceledException) { throw; }
@@ -667,7 +1139,27 @@ namespace Gsplat
             }
         }
 
-        async Task<GsplatAsset> LoadGsplatAssetAsync(string uri, CancellationToken token)
+        Task<GsplatAsset> AcquireGsplatAssetAsync(string uri, CancellationToken token)
+        {
+            CompressionMode compression = Compression;
+            SourceCoordinates coordinates = m_sessionCoordinates;
+            string key = GsplatLodSharedAssetCache.MakeKey(uri, compression, coordinates);
+            return GsplatLodSharedAssetCache.AcquireAsync(key, token, async sharedToken =>
+            {
+                await s_sharedAssetLoadGate.WaitAsync(sharedToken);
+                try
+                {
+                    return await LoadGsplatAssetAsync(uri, compression, coordinates, sharedToken);
+                }
+                finally
+                {
+                    s_sharedAssetLoadGate.Release();
+                }
+            });
+        }
+
+        static async Task<GsplatAsset> LoadGsplatAssetAsync(string uri, CompressionMode compression,
+            SourceCoordinates coordinates, CancellationToken token)
         {
             if (GsplatLodUri.IsUnpackedSogMetadata(uri))
             {
@@ -682,16 +1174,16 @@ namespace Gsplat
                         GsplatLodUri.Resolve(directory, file), token);
                 }
                 token.ThrowIfCancellationRequested();
-                return GsplatRuntimeLoader.LoadUnpackedSog(metadata,
+                return await GsplatRuntimeLoader.LoadUnpackedSogAsync(metadata,
                     filename => resolved.TryGetValue(NormalizeResourceName(filename), out byte[] bytes)
                         ? bytes : throw new FileNotFoundException($"SOG dependency '{filename}' was not loaded."),
-                    Compression, m_sessionCoordinates);
+                    compression, coordinates, token);
             }
 
             byte[] data = await LoadBytesAsync(uri, token);
             token.ThrowIfCancellationRequested();
-            return GsplatRuntimeLoader.Load(data, GsplatLodUri.ExtensionOf(uri), Compression,
-                m_sessionCoordinates);
+            return GsplatRuntimeLoader.Load(data, GsplatLodUri.ExtensionOf(uri), compression,
+                coordinates);
         }
 
         static string[] CollectSogFiles(string metadata)
@@ -812,6 +1304,12 @@ namespace Gsplat
             m_currentLods = null;
             m_optimalLods = null;
             m_desiredLods = null;
+            m_predictiveLods = null;
+            m_predictiveCandidates.Clear();
+            m_hasPredictiveCameraPose = false;
+            PredictedVisibleLeafCount = 0;
+            PredictivePrefetchDemandSplats = 0;
+            PredictivePrefetchRequestedSplats = 0;
             m_rangesDirty = false;
             m_rangeScratch.Clear();
             m_activeRangeFiles.Clear();
@@ -855,6 +1353,7 @@ namespace Gsplat
         static void DestroyAsset(GsplatAsset asset)
         {
             if (!asset) return;
+            if (GsplatLodSharedAssetCache.Release(asset)) return;
             if (Application.isPlaying) Destroy(asset);
             else DestroyImmediate(asset);
         }
@@ -868,6 +1367,10 @@ namespace Gsplat
             LodRangeMax = Mathf.Max(LodRangeMin, LodRangeMax);
             MaxConcurrentLoads = Mathf.Clamp(MaxConcurrentLoads, 1, 16);
             MaxRetries = Mathf.Clamp(MaxRetries, 0, 8);
+            FrustumPadding = Mathf.Max(0f, FrustumPadding);
+            LodHysteresis = Mathf.Clamp(LodHysteresis, 0f, 0.49f);
+            MaxActiveSplats = Mathf.Max(0, MaxActiveSplats);
+            MaxEstimatedResidentGpuMB = Mathf.Max(0f, MaxEstimatedResidentGpuMB);
             m_forceEvaluate = true;
         }
     }
@@ -980,4 +1483,3 @@ namespace Gsplat
             ? value : value + "/";
     }
 }
-#endif

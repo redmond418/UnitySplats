@@ -84,7 +84,7 @@ namespace Gsplat
         GsplatRendererImpl m_renderer;
         GsplatActiveRange[] m_activeRanges;
         IReadOnlyList<GsplatActiveRange> m_activeRangesView;
-        uint[] m_activeSourceIds;
+        uint m_activeRangeSplatCount;
         GsplatAsset m_activeRangesAsset;
         GsplatProxyRelighting m_proxyRelighting;
         GsplatVolumeLighting m_volumeLighting;
@@ -103,7 +103,7 @@ namespace Gsplat
         public uint SplatCount => m_renderer != null ? m_renderer.GsplatResource?.UploadedCount ?? 0 : 0;
 
         /// <summary>True after SetActiveRanges, including when the configured selection is empty.</summary>
-        public bool HasActiveRanges => m_activeSourceIds != null;
+        public bool HasActiveRanges => m_activeRanges != null;
 
         /// <summary>The normalized, sorted, non-overlapping half-open source ranges.</summary>
         public IReadOnlyList<GsplatActiveRange> ActiveRanges =>
@@ -114,7 +114,7 @@ namespace Gsplat
         /// Use ResidentActiveSplatCount for the currently uploaded/drawable intersection.
         /// </summary>
         public uint ActiveSplatCount => HasActiveRanges
-            ? (uint)m_activeSourceIds.Length
+            ? m_activeRangeSplatCount
             : GsplatAsset ? GsplatAsset.SplatCount : 0;
 
         /// <summary>Number of selected splats currently resident and eligible for drawing.</summary>
@@ -380,14 +380,14 @@ namespace Gsplat
             if (!GsplatAsset)
                 throw new InvalidOperationException("Assign a GsplatAsset before setting active ranges.");
 
-            NormalizeActiveRanges(ranges, GsplatAsset.SplatCount, out var normalized, out var sourceIds);
+            NormalizeActiveRanges(ranges, GsplatAsset.SplatCount, out var normalized, out uint selectedCount);
             m_activeRanges = normalized;
             m_activeRangesView = Array.AsReadOnly(normalized);
-            m_activeSourceIds = sourceIds;
+            m_activeRangeSplatCount = selectedCount;
             m_activeRangesAsset = GsplatAsset;
 
             if (m_renderer != null && m_prevAsset == GsplatAsset && m_renderer.GsplatResource != null)
-                m_renderer.SetActiveSourceIds(sourceIds);
+                m_renderer.SetActiveRanges(normalized, selectedCount);
             ForceRefresh();
         }
 
@@ -407,12 +407,12 @@ namespace Gsplat
         }
 
         static void NormalizeActiveRanges(IReadOnlyList<GsplatActiveRange> ranges, uint sourceCount,
-            out GsplatActiveRange[] normalized, out uint[] sourceIds)
+            out GsplatActiveRange[] normalized, out uint selectedCount)
         {
             if (ranges.Count == 0)
             {
                 normalized = Array.Empty<GsplatActiveRange>();
-                sourceIds = Array.Empty<uint>();
+                selectedCount = 0;
                 return;
             }
 
@@ -435,7 +435,7 @@ namespace Gsplat
             if (workingCount == 0)
             {
                 normalized = Array.Empty<GsplatActiveRange>();
-                sourceIds = Array.Empty<uint>();
+                selectedCount = 0;
                 return;
             }
 
@@ -464,31 +464,23 @@ namespace Gsplat
                 }
             }
 
-            ulong selectedCount = 0;
+            ulong totalSelectedCount = 0;
             for (var i = 0; i < normalizedCount; ++i)
-                selectedCount += working[i].Count;
-            if (selectedCount > int.MaxValue)
+                totalSelectedCount += working[i].Count;
+            if (totalSelectedCount > int.MaxValue)
                 throw new ArgumentOutOfRangeException(nameof(ranges),
                     "An active selection cannot exceed Int32.MaxValue splats.");
 
             normalized = new GsplatActiveRange[normalizedCount];
             Array.Copy(working, normalized, normalizedCount);
-            sourceIds = new uint[(int)selectedCount];
-            var destination = 0;
-            for (var i = 0; i < normalized.Length; ++i)
-            {
-                var range = normalized[i];
-                var count = checked((int)range.Count);
-                for (var j = 0; j < count; ++j)
-                    sourceIds[destination++] = range.Offset + (uint)j;
-            }
+            selectedCount = (uint)totalSelectedCount;
         }
 
         void ClearActiveRangeState()
         {
             m_activeRanges = null;
             m_activeRangesView = null;
-            m_activeSourceIds = null;
+            m_activeRangeSplatCount = 0;
             m_activeRangesAsset = null;
         }
 
@@ -552,10 +544,11 @@ namespace Gsplat
             }
             else if (m_prevAsset != GsplatAsset)
             {
-                if (m_activeSourceIds != null && m_activeRangesAsset != GsplatAsset)
+                if (HasActiveRanges && m_activeRangesAsset != GsplatAsset)
                     ClearActiveRangeState();
-                else if (m_activeSourceIds is { Length: > 0 } &&
-                         m_activeSourceIds[m_activeSourceIds.Length - 1] >= GsplatAsset.SplatCount)
+                else if (HasActiveRanges && m_activeRanges.Length > 0 &&
+                         (ulong)m_activeRanges[m_activeRanges.Length - 1].Offset +
+                         m_activeRanges[m_activeRanges.Length - 1].Count > GsplatAsset.SplatCount)
                 {
                     Debug.LogWarning(
                         $"[GsplatRenderer] Active ranges no longer fit reloaded asset '{GsplatAsset.name}' and were cleared.",
@@ -574,8 +567,8 @@ namespace Gsplat
                 var asyncUpload = AsyncUpload;
 #endif
                 m_renderer.BindGsplatAsset(GsplatAsset, asyncUpload);
-                if (m_activeSourceIds != null)
-                    m_renderer.SetActiveSourceIds(m_activeSourceIds);
+                if (HasActiveRanges)
+                    m_renderer.SetActiveRanges(m_activeRanges, m_activeRangeSplatCount);
                 GsplatSorter.Instance.MarkGlobalBuffersDirty();
             }
 

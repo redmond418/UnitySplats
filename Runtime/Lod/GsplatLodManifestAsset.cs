@@ -1,8 +1,6 @@
 // Copyright (c) 2026 ARLOOPA
 // SPDX-License-Identifier: MIT
 
-#if false // Temporarily disabled: lod-meta.json support is not part of the current public release.
-
 using System;
 using UnityEngine;
 
@@ -37,4 +35,3 @@ namespace Gsplat
         void OnValidate() => m_manifest = null;
     }
 }
-#endif

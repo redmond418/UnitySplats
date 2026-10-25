@@ -1,8 +1,6 @@
 // Copyright (c) 2026 ARLOOPA
 // SPDX-License-Identifier: MIT
 
-#if false // Temporarily disabled: lod-meta.json editor import and creation menus.
-
 using System;
 using System.IO;
 using UnityEditor;
@@ -122,4 +120,3 @@ namespace Gsplat.Editor
         }
     }
 }
-#endif

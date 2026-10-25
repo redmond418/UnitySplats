@@ -4,12 +4,17 @@
 #define GROUP_SIZE 256
 
 #pragma kernel InitOrder
+#pragma kernel InitActiveRanges
 
 #pragma multi_compile __ UPDATE_BOUNDS
 
 uint _SplatCount;
+uint _ActiveSplatCount;
+uint _ActiveRangeCount;
 
 AppendStructuredBuffer<uint> _OrderBuffer;
+RWStructuredBuffer<uint> _ActiveOrderBuffer;
+StructuredBuffer<uint4> _ActiveRanges;
 StructuredBuffer<float4> _PositionBuffer;
 
 struct GaussianCutoutShaderData
@@ -52,4 +57,33 @@ void InitOrder(uint3 id : SV_DispatchThreadID)
         InterlockedMax(_BoundsBuffer[5], FloatToSortableUint(splatPos.z));
 #endif
     }
+}
+
+[numthreads(GROUP_SIZE,1,1)]
+void InitActiveRanges(uint3 id : SV_DispatchThreadID)
+{
+    uint selectionIndex = id.x;
+    if (selectionIndex >= _ActiveSplatCount)
+        return;
+
+    if (_ActiveRangeCount == 1)
+    {
+        _ActiveOrderBuffer[selectionIndex] = _ActiveRanges[0].x + selectionIndex;
+        return;
+    }
+
+    uint lo = 0;
+    uint hi = _ActiveRangeCount;
+    while (lo < hi)
+    {
+        uint mid = lo + ((hi - lo) >> 1u);
+        if (selectionIndex < _ActiveRanges[mid].z)
+            hi = mid;
+        else
+            lo = mid + 1u;
+    }
+
+    uint4 range = _ActiveRanges[lo];
+    uint prefixStart = range.z - range.y;
+    _ActiveOrderBuffer[selectionIndex] = range.x + selectionIndex - prefixStart;
 }

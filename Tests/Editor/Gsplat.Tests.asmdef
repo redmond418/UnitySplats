@@ -3,7 +3,8 @@
     "rootNamespace": "Gsplat.Tests",
     "references": [
         "Gsplat",
-        "Gsplat.Editor"
+        "Gsplat.Editor",
+        "Unity.Mathematics"
     ],
     "includePlatforms": [
         "Editor"

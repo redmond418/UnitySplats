@@ -47,6 +47,19 @@ namespace Gsplat
         const int k_cpuSortRadix = 1 << 8;
         const int k_cpuSortPasses = sizeof(uint);
         const int k_cpuCancellationCheckMask = (1 << 14) - 1;
+        static readonly int k_activeSplatCount = Shader.PropertyToID("_ActiveSplatCount");
+        static readonly int k_activeRangeCount = Shader.PropertyToID("_ActiveRangeCount");
+        static readonly int k_activeRanges = Shader.PropertyToID("_ActiveRanges");
+        static readonly int k_activeOrderBuffer = Shader.PropertyToID("_ActiveOrderBuffer");
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct ActiveRangeUpload
+        {
+            public uint Offset;
+            public uint Count;
+            public uint PrefixEnd;
+            public uint Padding;
+        }
 
         sealed class CpuCenterCache
         {
@@ -152,6 +165,8 @@ namespace Gsplat
             readonly Texture2D m_orderTexture;
             readonly Color32[] m_orderTextureData;
             readonly int m_capacity;
+            GraphicsBuffer m_activeRangesBuffer;
+            ActiveRangeUpload[] m_activeRangeUploadScratch = Array.Empty<ActiveRangeUpload>();
 
             public GraphicsBuffer OrderBuffer { get; }
             public GraphicsBuffer InputKeys { get; private set; }
@@ -226,6 +241,100 @@ namespace Gsplat
                 if (sourceIds.Length > 0)
                     UploadOrder(sourceIds, sourceIds.Length);
                 Initialized = true;
+            }
+
+            public void SetActiveSourceRanges(ComputeShader initOrderShader,
+                GsplatActiveRange[] ranges, uint selectedCount)
+            {
+                if (m_disposed)
+                    return;
+                if (ranges == null)
+                    throw new ArgumentNullException(nameof(ranges));
+                if (selectedCount > m_capacity)
+                    throw new ArgumentOutOfRangeException(nameof(selectedCount),
+                        "Active source-range count exceeds the renderer order-buffer capacity.");
+
+                int kernel = -1;
+                if (m_usesGpuSort && OrderBuffer != null && !m_orderTexture && initOrderShader)
+                {
+                    try
+                    {
+                        kernel = initOrderShader.FindKernel("InitActiveRanges");
+                        if (!initOrderShader.IsSupported(kernel)) kernel = -1;
+                    }
+                    catch (Exception)
+                    {
+                        // Custom init-order shaders may not yet include the optional range kernel.
+                        kernel = -1;
+                    }
+                }
+
+                if (kernel < 0)
+                {
+                    SetActiveSourceIds(ExpandSourceRanges(ranges, selectedCount));
+                    return;
+                }
+
+                CancelCpuWork();
+                m_cpuGeneration++;
+                m_hasPendingCpuRequest = false;
+                LastCpuRequestedCount = uint.MaxValue;
+                m_activeSourceIds = null;
+
+                if (selectedCount == 0)
+                {
+                    Initialized = true;
+                    return;
+                }
+
+                ulong total = 0;
+                for (int i = 0; i < ranges.Length; ++i)
+                    total += ranges[i].Count;
+                if (total != selectedCount)
+                    throw new ArgumentException("Active range sizes do not match the selected count.", nameof(ranges));
+
+                if (m_activeRangeUploadScratch.Length < ranges.Length)
+                    m_activeRangeUploadScratch = new ActiveRangeUpload[ranges.Length];
+                if (m_activeRangesBuffer == null || m_activeRangesBuffer.count < ranges.Length)
+                {
+                    m_activeRangesBuffer?.Dispose();
+                    m_activeRangesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                        ranges.Length, sizeof(uint) * 4) { name = "Gsplat.ActiveRanges" };
+                }
+
+                uint prefixEnd = 0;
+                for (int i = 0; i < ranges.Length; ++i)
+                {
+                    GsplatActiveRange range = ranges[i];
+                    prefixEnd = checked(prefixEnd + range.Count);
+                    m_activeRangeUploadScratch[i] = new ActiveRangeUpload
+                    {
+                        Offset = range.Offset,
+                        Count = range.Count,
+                        PrefixEnd = prefixEnd
+                    };
+                }
+
+                m_activeRangesBuffer.SetData(m_activeRangeUploadScratch, 0, 0, ranges.Length);
+                initOrderShader.SetInt(k_activeSplatCount, checked((int)selectedCount));
+                initOrderShader.SetInt(k_activeRangeCount, ranges.Length);
+                initOrderShader.SetBuffer(kernel, k_activeRanges, m_activeRangesBuffer);
+                initOrderShader.SetBuffer(kernel, k_activeOrderBuffer, OrderBuffer);
+                initOrderShader.Dispatch(kernel, (int)GsplatUtils.DivRoundUp(selectedCount, 256), 1, 1);
+                Initialized = true;
+            }
+
+            static uint[] ExpandSourceRanges(GsplatActiveRange[] ranges, uint selectedCount)
+            {
+                var sourceIds = new uint[checked((int)selectedCount)];
+                int destination = 0;
+                foreach (GsplatActiveRange range in ranges)
+                {
+                    int count = checked((int)range.Count);
+                    for (int i = 0; i < count; ++i)
+                        sourceIds[destination++] = range.Offset + (uint)i;
+                }
+                return sourceIds;
             }
 
             public void ClearActiveSourceIds()
@@ -390,6 +499,9 @@ namespace Gsplat
                     Array.Clear(m_orderTextureData, 0, m_orderTextureData.Length);
                 InputKeys?.Dispose();
                 Resources.Dispose();
+                m_activeRangesBuffer?.Dispose();
+                m_activeRangesBuffer = null;
+                m_activeRangeUploadScratch = Array.Empty<ActiveRangeUpload>();
                 InputKeys = null;
             }
 
@@ -778,11 +890,12 @@ namespace Gsplat
                 if (gs.RemainingCount != 0)
                     m_activeGsplats.Add(gs);
             }
-
             GlobalRenderEnabled = m_globalRenderer.Valid && GsplatSettings.Instance.EnableGlobalSort &&
                                   m_activeGsplats.Count >= 2 && CanRenderGlobally();
             if (GlobalRenderEnabled)
+            {
                 m_globalRenderer.Update(m_activeGsplats);
+            }
             else
             {
                 // A previous multi-renderer merge duplicates the complete packed/SH/order
@@ -964,6 +1077,13 @@ namespace Gsplat
         {
             if (sorterResource is Resource resource)
                 resource.SetActiveSourceIds(sourceIds);
+        }
+
+        public void SetActiveSourceRanges(ISorterResource sorterResource, ComputeShader initOrderShader,
+            GsplatActiveRange[] ranges, uint selectedCount)
+        {
+            if (sorterResource is Resource resource)
+                resource.SetActiveSourceRanges(initOrderShader, ranges, selectedCount);
         }
 
         public void ClearActiveSourceIds(ISorterResource sorterResource)

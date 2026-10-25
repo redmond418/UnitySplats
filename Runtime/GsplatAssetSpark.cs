@@ -41,6 +41,94 @@ namespace Gsplat
     /// </summary>
     public class GsplatAssetSpark : GsplatAsset
     {
+        public sealed class PackedData
+        {
+            public uint SplatCount { get; internal set; }
+            public byte SHBands { get; internal set; }
+            public bool Antialiased { get; internal set; }
+            public Bounds Bounds { get; internal set; }
+            public uint4[] PackedSplats { get; internal set; }
+            public uint[] PackedSH1 { get; internal set; }
+            public uint[] PackedSH2 { get; internal set; }
+            public uint[] PackedSH3 { get; internal set; }
+            public uint[] PackedSH4 { get; internal set; }
+        }
+
+        internal static PackedData CreatePackedData(int count, byte shBands, bool antialiased)
+        {
+            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+            if (shBands > 4) throw new ArgumentOutOfRangeException(nameof(shBands));
+            return new PackedData
+            {
+                SplatCount = checked((uint)count),
+                SHBands = shBands,
+                Antialiased = antialiased,
+                PackedSplats = new uint4[count],
+                PackedSH1 = shBands >= 1 ? new uint[checked(count * 2)] : null,
+                PackedSH2 = shBands >= 2 ? new uint[checked(count * 4)] : null,
+                PackedSH3 = shBands >= 3 ? new uint[checked(count * 4)] : null,
+                PackedSH4 = shBands >= 4 ? new uint[checked(count * 4)] : null
+            };
+        }
+
+        internal static void PackSogSplat(PackedData packed, int index, Vector4 color,
+            Vector3 position, Vector3 scale, Vector4 rotationWxyz, ReadOnlySpan<Vector3> shCoefficients)
+        {
+            if (packed == null) throw new ArgumentNullException(nameof(packed));
+            if ((uint)index >= packed.SplatCount) throw new ArgumentOutOfRangeException(nameof(index));
+            if (!IsFinite(position) || !IsFinite(scale) || scale.x < 0f || scale.y < 0f || scale.z < 0f ||
+                !IsFinite(rotationWxyz) || rotationWxyz.sqrMagnitude <= 1e-20f || !IsFinite(color) ||
+                color.w < 0f || color.w > 1f)
+                throw new InvalidDataException($"Decoded SOG splat {index} contains invalid values.");
+
+            int coefficientCount = GsplatUtils.SHBandsToCoefficientCount(packed.SHBands);
+            if (shCoefficients.Length != coefficientCount)
+                throw new ArgumentException("SOG SH coefficient count does not match the packed asset.",
+                    nameof(shCoefficients));
+
+            Span<float> shBandData = stackalloc float[9 * 3];
+            int coefficientOffset = 0;
+            for (int band = 1; band <= packed.SHBands; ++band)
+            {
+                int bandSize = band * 2 + 1;
+                shBandData.Clear();
+                for (int k = 0; k < bandSize; ++k)
+                {
+                    Vector3 coefficient = shCoefficients[coefficientOffset + k];
+                    if (!IsFinite(coefficient))
+                        throw new InvalidDataException($"Decoded SOG SH coefficient {index}:{coefficientOffset + k} is invalid.");
+                    shBandData[k * 3] = coefficient.x;
+                    shBandData[k * 3 + 1] = coefficient.y;
+                    shBandData[k * 3 + 2] = coefficient.z;
+                }
+
+                if (band == 1) PackSH1(shBandData, packed.PackedSH1.AsSpan(index * 2, 2));
+                if (band == 2) PackSH2(shBandData, packed.PackedSH2.AsSpan(index * 4, 4));
+                if (band == 3) PackSH3(shBandData, packed.PackedSH3.AsSpan(index * 4, 4));
+                if (band == 4) PackSH4(shBandData, packed.PackedSH4.AsSpan(index * 4, 4));
+                coefficientOffset += bandSize;
+            }
+
+            float alpha = Mathf.Clamp(color.w, 1e-6f, 1f - 1e-6f);
+            var packedColor = new Vector4(color.x, color.y, color.z,
+                Mathf.Log(alpha / (1f - alpha)));
+            var logScale = new Vector3(
+                Mathf.Log(Mathf.Max(scale.x, 1e-30f)),
+                Mathf.Log(Mathf.Max(scale.y, 1e-30f)),
+                Mathf.Log(Mathf.Max(scale.z, 1e-30f)));
+            var rotation = new Quaternion(rotationWxyz.x, rotationWxyz.y,
+                rotationWxyz.z, rotationWxyz.w);
+            packed.PackedSplats[index] = PackSplat(packedColor, position, logScale, rotation);
+        }
+
+        static bool IsFinite(Vector3 value) =>
+            IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+
+        static bool IsFinite(Vector4 value) =>
+            IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z) && IsFinite(value.w);
+
+        static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
         public override CompressionMode Compression => CompressionMode.Spark;
 
         [HideInInspector] public uint[] PackedSH1;
@@ -84,19 +172,35 @@ namespace Gsplat
 
         public override void LoadFromDecoded(GsplatDecodedData data, ProgressCallback progressCallback = null)
         {
+            LoadFromPackedData(PackDecodedData(data, progressCallback));
+        }
+
+        /// <summary>Validates and packs decoded splats without touching a Unity object.
+        /// Safe to run on a worker thread before assigning the result to a ScriptableObject.</summary>
+        public static PackedData PackDecodedData(GsplatDecodedData data,
+            ProgressCallback progressCallback = null)
+        {
             if (data == null) throw new ArgumentNullException(nameof(data));
             data.Validate();
-            SplatCount = checked((uint)data.Count);
-            SHBands = data.SHBands;
-            Antialiased = data.Antialiased;
-            Bounds = data.Bounds;
-            Allocate();
 
-            int coefficientCount = GsplatUtils.SHBandsToCoefficientCount(SHBands);
+            var packed = new PackedData
+            {
+                SplatCount = checked((uint)data.Count),
+                SHBands = data.SHBands,
+                Antialiased = data.Antialiased,
+                Bounds = data.Bounds,
+                PackedSplats = new uint4[data.Count],
+                PackedSH1 = data.SHBands >= 1 ? new uint[data.Count * 2] : null,
+                PackedSH2 = data.SHBands >= 2 ? new uint[data.Count * 4] : null,
+                PackedSH3 = data.SHBands >= 3 ? new uint[data.Count * 4] : null,
+                PackedSH4 = data.SHBands >= 4 ? new uint[data.Count * 4] : null
+            };
+
+            int coefficientCount = GsplatUtils.SHBandsToCoefficientCount(data.SHBands);
             var shBandData = new float[9 * 3];
             for (int i = 0; i < data.Count; i++)
             {
-                for (int band = 1, coefficientOffset = 0; band <= SHBands; band++)
+                for (int band = 1, coefficientOffset = 0; band <= data.SHBands; band++)
                 {
                     int bandSize = band * 2 + 1;
                     Array.Clear(shBandData, 0, shBandData.Length);
@@ -108,10 +212,10 @@ namespace Gsplat
                         shBandData[k * 3 + 2] = coefficient.z;
                     }
 
-                    if (band == 1) PackSH1(shBandData, PackedSH1.AsSpan(i * 2, 2));
-                    if (band == 2) PackSH2(shBandData, PackedSH2.AsSpan(i * 4, 4));
-                    if (band == 3) PackSH3(shBandData, PackedSH3.AsSpan(i * 4, 4));
-                    if (band == 4) PackSH4(shBandData, PackedSH4.AsSpan(i * 4, 4));
+                    if (band == 1) PackSH1(shBandData, packed.PackedSH1.AsSpan(i * 2, 2));
+                    if (band == 2) PackSH2(shBandData, packed.PackedSH2.AsSpan(i * 4, 4));
+                    if (band == 3) PackSH3(shBandData, packed.PackedSH3.AsSpan(i * 4, 4));
+                    if (band == 4) PackSH4(shBandData, packed.PackedSH4.AsSpan(i * 4, 4));
                     coefficientOffset += bandSize;
                 }
 
@@ -129,12 +233,27 @@ namespace Gsplat
                 // a four-component transport here, so place WXYZ directly in its x/y/z/w fields.
                 var rotation = new Quaternion(sourceRotation.x, sourceRotation.y, sourceRotation.z,
                     sourceRotation.w);
-                PackedSplats[i] = PackSplat(packedColor, data.Positions[i], logScale, rotation);
+                packed.PackedSplats[i] = PackSplat(packedColor, data.Positions[i], logScale, rotation);
 
                 if ((i & 0x3fff) == 0)
                     progressCallback?.Invoke("Packing splats", i / (float)Math.Max(1, data.Count));
             }
             progressCallback?.Invoke("Packing splats", 1f);
+            return packed;
+        }
+
+        internal void LoadFromPackedData(PackedData data)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            SplatCount = data.SplatCount;
+            SHBands = data.SHBands;
+            Antialiased = data.Antialiased;
+            Bounds = data.Bounds;
+            PackedSplats = data.PackedSplats;
+            PackedSH1 = data.PackedSH1;
+            PackedSH2 = data.PackedSH2;
+            PackedSH3 = data.PackedSH3;
+            PackedSH4 = data.PackedSH4;
         }
 
         public override GsplatResource CreateResource()
@@ -547,7 +666,7 @@ namespace Gsplat
         /// Encode an array of 9 signed RGB SH1 coefficients (clamped to [-1,1]) into
         /// a pair of uint32 values, where each coefficient is stored as a sint7
         /// </summary>
-        protected static void PackSH1(float[] sh, Span<uint> output)
+        protected static void PackSH1(ReadOnlySpan<float> sh, Span<uint> output)
         {
             output.Clear();
             for (var i = 0; i < 9; ++i)
@@ -591,7 +710,7 @@ namespace Gsplat
         /// Encode an array of 15 signed RGB SH2 coefficients (clamped to [-1,1]) into
         /// an array of 4 uint32 values, where each coefficient is stored as a sint8.
         /// </summary>
-        protected static void PackSH2(float[] sh, Span<uint> output)
+        protected static void PackSH2(ReadOnlySpan<float> sh, Span<uint> output)
         {
             output[0] = PackSint8Bytes(sh[0], sh[1], sh[2], sh[3]);
             output[1] = PackSint8Bytes(sh[4], sh[5], sh[6], sh[7]);
@@ -605,7 +724,7 @@ namespace Gsplat
         /// Matches the SPZ writer's shRestBits=4 default precision so there is no
         /// information loss vs the source SPZ data.
         /// </summary>
-        protected static void PackSH4(float[] sh, Span<uint> output)
+        protected static void PackSH4(ReadOnlySpan<float> sh, Span<uint> output)
         {
             output.Clear();
             for (var i = 0; i < 27; ++i)
@@ -630,7 +749,7 @@ namespace Gsplat
         /// Encode an array of 21 signed RGB SH3 coefficients (clamped to [-1,1]) into
         /// an array of 4 uint32 values, where each coefficient is stored as a sint6.
         /// </summary>
-        protected static void PackSH3(float[] sh, Span<uint> output)
+        protected static void PackSH3(ReadOnlySpan<float> sh, Span<uint> output)
         {
             output.Clear();
             for (var i = 0; i < 21; ++i)

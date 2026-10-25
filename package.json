@@ -11,11 +11,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arloopa/UnitySplats.git"
+    "url": "https://github.com/redmond418/UnitySplats.git"
   },
-  "documentationUrl": "https://github.com/arloopa/UnitySplats#readme",
-  "changelogUrl": "https://github.com/arloopa/UnitySplats/blob/main/CHANGELOG.md",
-  "licensesUrl": "https://github.com/arloopa/UnitySplats/blob/main/LICENSE.md",
+  "documentationUrl": "https://github.com/redmond418/UnitySplats/blob/codex/forest-tile-lod/README.md",
+  "changelogUrl": "https://github.com/redmond418/UnitySplats/blob/codex/forest-tile-lod/CHANGELOG.md",
+  "licensesUrl": "https://github.com/redmond418/UnitySplats/blob/codex/forest-tile-lod/LICENSE.md",
   "keywords": [
     "gaussian-splatting",
     "3dgs",

@@ -63,6 +63,28 @@ namespace Gsplat.Formats
             SourceCoordinates sourceCoordinates = SourceCoordinates.RUB,
             ProgressCallback progress = null)
         {
+            return ReadUnpackedCore(metadata, resolveFile, sourceCoordinates, progress,
+                packDirectly: false, out _);
+        }
+
+        /// <summary>Decodes SOG images directly into Spark arrays, avoiding the large canonical
+        /// per-splat arrays used by the general-purpose decoded-data path.</summary>
+        internal static GsplatAssetSpark.PackedData ReadUnpackedPacked(string metadata,
+            Func<string, byte[]> resolveFile,
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUB,
+            ProgressCallback progress = null)
+        {
+            ReadUnpackedCore(metadata, resolveFile, sourceCoordinates, progress,
+                packDirectly: true, out GsplatAssetSpark.PackedData packed);
+            return packed;
+        }
+
+        static GsplatDecodedData ReadUnpackedCore(string metadata,
+            Func<string, byte[]> resolveFile, SourceCoordinates sourceCoordinates,
+            ProgressCallback progress, bool packDirectly,
+            out GsplatAssetSpark.PackedData packedOutput)
+        {
+            packedOutput = null;
             if (string.IsNullOrWhiteSpace(metadata)) throw new ArgumentException("SOG metadata is empty.", nameof(metadata));
             if (resolveFile == null) throw new ArgumentNullException(nameof(resolveFile));
 
@@ -129,13 +151,19 @@ namespace Gsplat.Formats
 
             bool flipRows = DetermineVerticalFlip(quats, count);
             bool antialiased = root.OptionalBool("antialias", false);
-            var result = new GsplatDecodedData(count, (byte)shBands) { Antialiased = antialiased };
+            var result = packDirectly ? null : new GsplatDecodedData(count, (byte)shBands)
+                { Antialiased = antialiased };
+            var packedResult = packDirectly
+                ? GsplatAssetSpark.CreatePackedData(count, (byte)shBands, antialiased)
+                : null;
+            packedOutput = packedResult;
             var (px, py, pz) = GsplatUtils.AxisSigns(sourceCoordinates);
             float qxSign = py * pz;
             float qySign = px * pz;
             float qzSign = px * py;
             Vector3 boundsMin = Vector3.positiveInfinity;
             Vector3 boundsMax = Vector3.negativeInfinity;
+            Span<Vector3> shCoefficientScratch = stackalloc Vector3[15];
 
             for (int i = 0; i < count; i++)
             {
@@ -151,24 +179,26 @@ namespace Gsplat.Formats
                 float ny = Mathf.Lerp(meansMin[1], meansMax[1], ((high.G << 8) | low.G) / 65535f);
                 float nz = Mathf.Lerp(meansMin[2], meansMax[2], ((high.B << 8) | low.B) / 65535f);
                 Vector3 position = new(px * Unlog(nx), py * Unlog(ny), pz * Unlog(nz));
-                result.Positions[i] = position;
+                if (!packDirectly) result.Positions[i] = position;
                 boundsMin = Vector3.Min(boundsMin, position);
                 boundsMax = Vector3.Max(boundsMax, position);
 
                 float sx = version == 2 ? scaleCodebook[scalePixel.R] : Mathf.Lerp(scaleMin[0], scaleMax[0], scalePixel.R / 255f);
                 float sy = version == 2 ? scaleCodebook[scalePixel.G] : Mathf.Lerp(scaleMin[1], scaleMax[1], scalePixel.G / 255f);
                 float sz = version == 2 ? scaleCodebook[scalePixel.B] : Mathf.Lerp(scaleMin[2], scaleMax[2], scalePixel.B / 255f);
-                result.Scales[i] = new Vector3(Mathf.Exp(sx), Mathf.Exp(sy), Mathf.Exp(sz));
+                Vector3 scale = new(Mathf.Exp(sx), Mathf.Exp(sy), Mathf.Exp(sz));
+                if (!packDirectly) result.Scales[i] = scale;
 
                 Quaternion q = DecodeQuaternion(quatPixel);
                 var qWxyz = new Vector4(q.w, qxSign * q.x, qySign * q.y, qzSign * q.z).normalized;
-                result.Rotations[i] = qWxyz;
+                if (!packDirectly) result.Rotations[i] = qWxyz;
 
                 float dcR = version == 2 ? sh0Codebook[colorPixel.R] : Mathf.Lerp(sh0Min[0], sh0Max[0], colorPixel.R / 255f);
                 float dcG = version == 2 ? sh0Codebook[colorPixel.G] : Mathf.Lerp(sh0Min[1], sh0Max[1], colorPixel.G / 255f);
                 float dcB = version == 2 ? sh0Codebook[colorPixel.B] : Mathf.Lerp(sh0Min[2], sh0Max[2], colorPixel.B / 255f);
                 float alpha = version == 2 ? colorPixel.A / 255f : Sigmoid(Mathf.Lerp(sh0Min[3], sh0Max[3], colorPixel.A / 255f));
-                result.Colors[i] = new Vector4(dcR, dcG, dcB, alpha);
+                Vector4 color = new(dcR, dcG, dcB, alpha);
+                if (!packDirectly) result.Colors[i] = color;
 
                 if (shBands > 0)
                 {
@@ -185,14 +215,22 @@ namespace Gsplat.Formats
                         float g = version == 2 ? shCodebook[coefficient.G] : Mathf.Lerp(shMin, shMax, coefficient.G / 255f);
                         float b = version == 2 ? shCodebook[coefficient.B] : Mathf.Lerp(shMin, shMax, coefficient.B / 255f);
                         float sign = ShSign(sourceCoordinates, k);
-                        result.SHs[i * shCoefficients + k] = sign * new Vector3(r, g, b);
+                        Vector3 sh = sign * new Vector3(r, g, b);
+                        if (packDirectly) shCoefficientScratch[k] = sh;
+                        else result.SHs[i * shCoefficients + k] = sh;
                     }
                 }
+
+                if (packDirectly)
+                    GsplatAssetSpark.PackSogSplat(packedResult, i, color, position, scale,
+                        qWxyz, shCoefficientScratch[..shCoefficients]);
 
                 if ((i & 0x3fff) == 0) progress?.Invoke("Decoding SOG splats", i / (float)count);
             }
 
-            result.Bounds = new Bounds((boundsMin + boundsMax) * 0.5f, boundsMax - boundsMin);
+            var bounds = new Bounds((boundsMin + boundsMax) * 0.5f, boundsMax - boundsMin);
+            if (packDirectly) packedResult.Bounds = bounds;
+            else result.Bounds = bounds;
             progress?.Invoke("Decoding SOG splats", 1f);
             return result;
         }

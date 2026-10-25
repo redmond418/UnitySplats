@@ -12,9 +12,11 @@ UnitySplats is a cross-platform Unity 6 package for importing, loading, and rend
 
 UnitySplats is a modified and substantially extended fork of [wuyize25/gsplat-unity](https://github.com/wuyize25/gsplat-unity). The original Unity renderer is Copyright (c) 2025 Yize Wu and is distributed under the MIT License.
 
+This repository is a user-maintained fork of [ARLOOPA/UnitySplats](https://github.com/arloopa/UnitySplats). It adds camera-centered streamed tile grids, visibility and splat budgets, shared tile assets, and asynchronous SOG decode/packing. Upstream copyright and license notices remain in place.
+
 The package also adapts parts of the Gaussian-splat architecture and format behavior from the [PlayCanvas Engine](https://github.com/playcanvas/engine), including concepts used by the PLY, SOG, and GLB implementations. The PlayCanvas reference used during this Unity work was `v2.21.0-beta.14` (`d5fe88878e338936fe763bbce1a58bc315e89cbe`). PlayCanvas Engine is Copyright (c) 2011-2026 PlayCanvas Ltd and is distributed under the MIT License.
 
-UnitySplats is a Unity implementation maintained by ARLOOPA. It is not an official PlayCanvas product and does not include the PlayCanvas JavaScript engine. Existing upstream copyright and license notices are retained in the source and in [Third Party Notices](./Third%20Party%20Notices.md).
+The upstream Unity implementation is maintained by ARLOOPA. This fork is not an official PlayCanvas product and does not include the PlayCanvas JavaScript engine. Existing upstream copyright and license notices are retained in the source and in [Third Party Notices](./Third%20Party%20Notices.md).
 
 ## Features
 
@@ -25,6 +27,9 @@ UnitySplats is a Unity implementation maintained by ARLOOPA. It is not an offici
 - Runtime loading from file paths, byte arrays, and streams.
 - Spark-packed and uncompressed Unity asset representations.
 - Asynchronous GPU upload with optional rendering during upload.
+- PlayCanvas `lod-meta.json` streaming with camera-based per-leaf LOD selection, frustum culling, hysteresis, and active-splat/resident-memory budgets.
+- Camera-centered 3x3–5x5 tile grids with recentering, shared decoded SOG assets, and staggered LOD updates.
+- Optional camera-motion predictive prefetch, disabled by default.
 - Orthographic cameras, MSAA, cutouts, active source ranges, and XR integration.
 - Runtime graphics-backend selection for Direct3D, Vulkan, Metal, OpenGL, and WebGL 2.
 
@@ -91,7 +96,7 @@ UnitySplats already declares Unity.WebP 0.3.22 as a package dependency. To let U
     }
   ],
   "dependencies": {
-    "com.arloopa.unitysplats": "https://github.com/arloopa/UnitySplats.git"
+    "com.arloopa.unitysplats": "https://github.com/redmond418/UnitySplats.git#codex/forest-tile-lod"
   }
 }
 ```
@@ -113,7 +118,7 @@ Unity Package Manager cannot resolve one Git package as a transitive dependency 
 4. Repeat the process for UnitySplats:
 
    ```text
-   https://github.com/arloopa/UnitySplats.git
+   https://github.com/redmond418/UnitySplats.git#codex/forest-tile-lod
    ```
 
 This installs the repository's current default branch.
@@ -126,7 +131,7 @@ Add both direct dependencies to the target project's `Packages/manifest.json`:
 {
   "dependencies": {
     "com.netpyoung.webp": "https://github.com/netpyoung/unity.webp.git?path=unity_project/Assets/unity.webp#0.3.22",
-    "com.arloopa.unitysplats": "https://github.com/arloopa/UnitySplats.git"
+    "com.arloopa.unitysplats": "https://github.com/redmond418/UnitySplats.git#codex/forest-tile-lod"
   }
 }
 ```
@@ -156,6 +161,14 @@ For maximum performance, prefer Vulkan on Android and Vulkan or Direct3D 12 on W
 3. Drag the imported asset from the Project window into the Hierarchy or Scene view. UnitySplats automatically creates a GameObject with `GsplatRenderer`, assigns the asset, and sets its local Z rotation to 180 degrees.
 
 You can also create a GameObject manually, add a `Gsplat Renderer` component, and assign the imported asset to its `Gsplat Asset` field.
+
+## Stream and tile large captures
+
+For PlayCanvas LOD captures, import or load the `lod-meta.json` manifest with `GsplatLodManifestAsset` or `GsplatLodStreamer.ManifestUri`. Add `GsplatLodStreamer` to a tile template, assign the manifest and camera, then add `GsplatLodTileGrid` to a parent GameObject and assign that streamer as **Tile Template**. The grid supports 3x3 through 5x5 tiles, recenters in XZ around the camera, and shares decoded assets for repeated tile URIs.
+
+Use **Total Active Splat Budget** to cap visible draw work across the grid and **Total Estimated Resident GPU MB** to cap cached and in-flight tile assets. The resident value is an estimate, not a hardware VRAM counter. Keep the manifest and every referenced SOG resource available under `StreamingAssets` when loading by URI. Tile data and scenes are not bundled with this package.
+
+Camera-motion predictive prefetch is optional and off by default. Regular LOD streaming still loads the LOD needed by visible leaves and may request a finer level for them.
 
 In the Scene view, click anywhere inside a splat's transformed asset bounds to select its GameObject; a collider is not required. Unity's normal Shift/Ctrl selection modifiers continue to work. Selecting several `GsplatRenderer` GameObjects enables multi-object editing for their shared inspector properties and can fit all attached `BoxCollider` components in one action.
 

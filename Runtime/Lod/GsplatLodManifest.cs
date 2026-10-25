@@ -3,8 +3,6 @@
 // Unity port copyright (c) 2026 ARLOOPA.
 // SPDX-License-Identifier: MIT
 
-#if false // Temporarily disabled: lod-meta.json support is not part of the current public release.
-
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -244,4 +242,3 @@ namespace Gsplat
         }
     }
 }
-#endif

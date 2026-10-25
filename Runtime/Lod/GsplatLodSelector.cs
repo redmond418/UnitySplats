@@ -1,8 +1,6 @@
 // PlayCanvas-compatible Gaussian-splat LOD selection helpers.
 // SPDX-License-Identifier: MIT
 
-#if false // Temporarily disabled: lod-meta.json support is not part of the current public release.
-
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -24,32 +22,13 @@ namespace Gsplat
             float behindPenalty = 1f)
         {
             if (maxLod < 0) throw new ArgumentOutOfRangeException(nameof(maxLod));
-            if (!float.IsFinite(verticalFovDegrees) || verticalFovDegrees <= 0f || verticalFovDegrees >= 180f)
-                throw new ArgumentOutOfRangeException(nameof(verticalFovDegrees));
-            if (!float.IsFinite(aspect) || aspect <= 0f) throw new ArgumentOutOfRangeException(nameof(aspect));
             lodBaseDistance = Mathf.Max(0.1f, lodBaseDistance);
             lodMultiplier = Mathf.Max(1.2f, lodMultiplier);
-            behindPenalty = Mathf.Max(1f, behindPenalty);
             rangeMin = Mathf.Clamp(rangeMin, 0, maxLod);
             rangeMax = Mathf.Clamp(rangeMax, rangeMin, maxLod);
 
-            Vector3 closest = localBounds.ClosestPoint(localCameraPosition);
-            Vector3 delta = closest - localCameraPosition;
-            float actualDistance = delta.magnitude;
-            float penalizedDistance = actualDistance;
-            if (behindPenalty > 1f && actualDistance > 0.01f)
-            {
-                Vector3 forward = localCameraForward.sqrMagnitude > 1e-12f
-                    ? localCameraForward.normalized : Vector3.forward;
-                float dot = Vector3.Dot(forward, delta) / actualDistance;
-                if (dot < 0f)
-                    penalizedDistance *= 1f + (-dot) * (behindPenalty - 1f);
-            }
-
-            float tanHalfV = Mathf.Tan(verticalFovDegrees * 0.5f * Mathf.Deg2Rad);
-            float tanHalfH = tanHalfV * aspect;
-            float fovScale = Mathf.Min(tanHalfV, tanHalfH) / ReferenceTanHalfFov;
-            float distance = penalizedDistance * fovScale;
+            float distance = GetEffectiveDistance(localBounds, localCameraPosition, localCameraForward,
+                verticalFovDegrees, aspect, behindPenalty);
 
             int lod = 0;
             if (maxLod > 0 && distance >= lodBaseDistance)
@@ -66,6 +45,57 @@ namespace Gsplat
             }
 
             return Mathf.Clamp(lod, rangeMin, rangeMax);
+        }
+
+        /// <summary>Returns the FOV-compensated nearest-AABB distance used for LOD bands.</summary>
+        public static float GetEffectiveDistance(Bounds localBounds, Vector3 localCameraPosition,
+            Vector3 localCameraForward, float verticalFovDegrees, float aspect,
+            float behindPenalty = 1f)
+        {
+            if (!float.IsFinite(verticalFovDegrees) || verticalFovDegrees <= 0f || verticalFovDegrees >= 180f)
+                throw new ArgumentOutOfRangeException(nameof(verticalFovDegrees));
+            if (!float.IsFinite(aspect) || aspect <= 0f) throw new ArgumentOutOfRangeException(nameof(aspect));
+            behindPenalty = Mathf.Max(1f, behindPenalty);
+
+            Vector3 delta = localBounds.ClosestPoint(localCameraPosition) - localCameraPosition;
+            float actualDistance = delta.magnitude;
+            float penalizedDistance = actualDistance;
+            if (behindPenalty > 1f && actualDistance > 0.01f)
+            {
+                Vector3 forward = localCameraForward.sqrMagnitude > 1e-12f
+                    ? localCameraForward.normalized : Vector3.forward;
+                float dot = Vector3.Dot(forward, delta) / actualDistance;
+                if (dot < 0f)
+                    penalizedDistance *= 1f + (-dot) * (behindPenalty - 1f);
+            }
+
+            float tanHalfV = Mathf.Tan(verticalFovDegrees * 0.5f * Mathf.Deg2Rad);
+            float tanHalfH = tanHalfV * aspect;
+            float fovScale = Mathf.Min(tanHalfV, tanHalfH) / ReferenceTanHalfFov;
+            return penalizedDistance * fovScale;
+        }
+
+        /// <summary>Retains the current band inside a relative hysteresis zone around its boundary.</summary>
+        public static int ApplyHysteresis(int currentLod, int desiredLod, float effectiveDistance,
+            float lodBaseDistance, float lodMultiplier, float hysteresisFraction)
+        {
+            if (currentLod < 0 || currentLod == desiredLod || hysteresisFraction <= 0f)
+                return desiredLod;
+
+            lodBaseDistance = Mathf.Max(0.1f, lodBaseDistance);
+            lodMultiplier = Mathf.Max(1.2f, lodMultiplier);
+            hysteresisFraction = Mathf.Clamp(hysteresisFraction, 0f, 0.49f);
+
+            if (desiredLod > currentLod)
+            {
+                float boundary = lodBaseDistance * Mathf.Pow(lodMultiplier, currentLod);
+                return effectiveDistance >= boundary * (1f + hysteresisFraction)
+                    ? desiredLod : currentLod;
+            }
+
+            float finerBoundary = lodBaseDistance * Mathf.Pow(lodMultiplier, currentLod - 1);
+            return effectiveDistance <= finerBoundary * (1f - hysteresisFraction)
+                ? desiredLod : currentLod;
         }
     }
 
@@ -110,4 +140,3 @@ namespace Gsplat
         }
     }
 }
-#endif

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Enabled PlayCanvas `lod-meta.json` LOD manifest import and runtime streaming.
+- Added camera-centered 3x3–5x5 tile grids, XZ recentering, shared SOG asset caching, and staggered per-tile LOD evaluation.
+- Added frustum culling, LOD hysteresis, aggregate active-splat and estimated resident-GPU budgets, and optional camera-motion predictive prefetch (off by default).
+- Added asynchronous SOG decode and Spark packing for streamed assets.
+
+### Changed
+
+- Updated Git installation examples to use this fork's `codex/forest-tile-lod` branch.
+
 ## [2.0.0] - 2026-10-21
 
 ### Added

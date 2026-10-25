@@ -102,6 +102,7 @@ namespace Gsplat
         GsplatCutout.ShaderData[] m_cutoutsData;
         uint m_prevSplatCount;
         uint[] m_activeSourceIds;
+        GsplatActiveRange[] m_activeRanges;
 
         public GsplatRendererImpl(uint splatCount)
         {
@@ -151,7 +152,22 @@ namespace Gsplat
         public void SetActiveSourceIds(uint[] sourceIds)
         {
             m_activeSourceIds = sourceIds ?? throw new ArgumentNullException(nameof(sourceIds));
+            m_activeRanges = null;
             GsplatSorter.Instance.SetActiveSourceIds(SorterResource, sourceIds);
+            m_cutoutsData = Array.Empty<GsplatCutout.ShaderData>();
+            UpdateActiveRangeCount();
+            ComputeSortRequired = true;
+            ComputeCutoutsRequired = false;
+            ForceRefresh();
+        }
+
+        public void SetActiveRanges(GsplatActiveRange[] ranges, uint selectedCount)
+        {
+            m_activeRanges = ranges ?? throw new ArgumentNullException(nameof(ranges));
+            m_activeSourceIds = null;
+            GsplatSorter.Instance.SetActiveSourceRanges(SorterResource,
+                m_gsplatAsset ? m_gsplatAsset.GsplatMaterial.InitOrderShader : null,
+                ranges, selectedCount);
             m_cutoutsData = Array.Empty<GsplatCutout.ShaderData>();
             UpdateActiveRangeCount();
             ComputeSortRequired = true;
@@ -162,6 +178,7 @@ namespace Gsplat
         public void ClearActiveSourceIds()
         {
             m_activeSourceIds = null;
+            m_activeRanges = null;
             GsplatSorter.Instance.ClearActiveSourceIds(SorterResource);
             m_cutoutsData = Array.Empty<GsplatCutout.ShaderData>();
             m_remainingCount = GsplatResource?.UploadedCount ?? 0;
@@ -172,7 +189,7 @@ namespace Gsplat
 
         public void PrepareActiveRanges()
         {
-            if (m_activeSourceIds == null)
+            if (m_activeSourceIds == null && m_activeRanges == null)
                 return;
             UpdateActiveRangeCount();
             ComputeCutoutsRequired = false;
@@ -182,7 +199,9 @@ namespace Gsplat
         void UpdateActiveRangeCount()
         {
             var uploadedCount = GsplatResource?.UploadedCount ?? 0;
-            var residentCount = CountResidentSourceIds(m_activeSourceIds, uploadedCount);
+            var residentCount = m_activeRanges != null
+                ? CountResidentSourceRanges(m_activeRanges, uploadedCount)
+                : CountResidentSourceIds(m_activeSourceIds, uploadedCount);
             if (residentCount == m_remainingCount)
                 return;
             m_remainingCount = residentCount;
@@ -203,6 +222,17 @@ namespace Gsplat
                     hi = mid;
             }
             return (uint)lo;
+        }
+
+        static uint CountResidentSourceRanges(GsplatActiveRange[] ranges, uint uploadedCount)
+        {
+            ulong residentCount = 0;
+            foreach (GsplatActiveRange range in ranges)
+            {
+                if (range.Offset >= uploadedCount) continue;
+                residentCount += Math.Min((ulong)range.Count, (ulong)uploadedCount - range.Offset);
+            }
+            return checked((uint)residentCount);
         }
 
         Bounds ExtractBounds()
@@ -318,10 +348,11 @@ namespace Gsplat
 
         public void ReleaseGsplatAsset()
         {
-            if (m_activeSourceIds != null)
+            if (m_activeSourceIds != null || m_activeRanges != null)
             {
                 GsplatSorter.Instance.ClearActiveSourceIds(SorterResource);
                 m_activeSourceIds = null;
+                m_activeRanges = null;
             }
             GsplatSorter.Instance.UnbindSorterAsset(SorterResource);
             GsplatResourceManager.Release(m_gsplatAsset);
@@ -441,6 +472,7 @@ namespace Gsplat
         {
             ReleaseGsplatAsset();
             m_activeSourceIds = null;
+            m_activeRanges = null;
             OrderBuffer?.Dispose();
             OrderBuffer = null;
             GsplatUtils.DestroyRuntimeTexture(OrderTexture);

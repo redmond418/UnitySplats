@@ -3,6 +3,8 @@
 
 using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Gsplat.Formats;
 using UnityEngine;
 
@@ -135,6 +137,48 @@ namespace Gsplat
             {
                 asset.name = "Runtime SOG Gsplat";
                 asset.LoadFromDecoded(decoded, progress);
+                return asset;
+            }
+            catch
+            {
+                if (Application.isPlaying)
+                    UnityEngine.Object.Destroy(asset);
+                else
+                    UnityEngine.Object.DestroyImmediate(asset);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Decodes and packs an unpacked SOG on a worker thread, then assigns the packed arrays
+        /// to a Spark ScriptableObject on Unity's main thread. Call from Unity's synchronization
+        /// context and do not provide Unity API calls through <paramref name="resolveFile"/>.
+        /// </summary>
+        public static async Task<GsplatAsset> LoadUnpackedSogAsync(
+            string metadata,
+            Func<string, byte[]> resolveFile,
+            CompressionMode compression = CompressionMode.Spark,
+            SourceCoordinates sourceCoordinates = SourceCoordinates.Unspecified,
+            CancellationToken cancellationToken = default)
+        {
+            if (compression != CompressionMode.Spark)
+                throw new NotSupportedException("Background SOG packing currently supports Spark assets only.");
+
+            // Create the Unity object before entering Task.Run so type initialization and all
+            // ScriptableObject writes stay on the Unity thread.
+            var asset = ScriptableObject.CreateInstance<GsplatAssetSpark>();
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                GsplatAssetSpark.PackedData packed = await Task.Run(() =>
+                {
+                    GsplatAssetSpark.PackedData decodedAndPacked = PlayCanvasSogReader.ReadUnpackedPacked(
+                        metadata, resolveFile, ResolveCoordinates(GsplatFileFormat.Sog, sourceCoordinates));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return decodedAndPacked;
+                }, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                asset.LoadFromPackedData(packed);
                 return asset;
             }
             catch
