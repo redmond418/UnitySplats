@@ -1,0 +1,145 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &322047082705810954
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8300738491017031637}
+  - component: {fileID: 8063394192659960987}
+  m_Layer: 0
+  m_Name: Tile Source (Managed)
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8300738491017031637
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 322047082705810954}
+  serializedVersion: 2
+  m_LocalRotation: {x: 1, y: -0, z: -0, w: -0.00000004371139}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 4796740816242791066}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &8063394192659960987
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 322047082705810954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eaa6b1e262a74bb788561ff5ca9f2251, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Gsplat::Gsplat.GsplatLodStreamer
+  ManifestAsset: {fileID: 0}
+  ManifestUri: ForestTile/lod-meta.json
+  SourceCoordinates: 4
+  Compression: 1
+  LodCamera: {fileID: 0}
+  LodBaseDistance: 5
+  LodMultiplier: 3
+  LodRangeMin: 0
+  LodRangeMax: 99
+  LodBehindPenalty: 1
+  LodUnderfillLimit: 0
+  LodUpdateIntervalFrames: 10
+  LodUpdatePhaseFrames: -1
+  MaxConcurrentLoads: 1
+  MaxRetries: 2
+  RetryDelayMilliseconds: 250
+  CacheCooldownSeconds: 2
+  FailureCooldownSeconds: 5
+  AsyncGpuUpload: 1
+  FrustumCulling: 1
+  FrustumPadding: 0.5
+  LodHysteresis: 0.1
+  MaxActiveSplats: 1500000
+  MaxEstimatedResidentGpuMB: 1536
+  SHDegree: 3
+  Brightness: 1
+  SplatDownscaleFactor: 0
+  GammaToLinear: 0
+  RenderOrder: 0
+--- !u!1 &4268576067489288099
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4796740816242791066}
+  - component: {fileID: 8975761729672877146}
+  m_Layer: 0
+  m_Name: ForestTileGrid
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4796740816242791066
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4268576067489288099}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 8300738491017031637}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &8975761729672877146
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4268576067489288099}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a39d0b160180c740a6ef5cb6cac9968, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Gsplat::Gsplat.GsplatLodTileGrid
+  GridSize: 5
+  TileSpacingMeters: 5
+  FollowCameraOnXZ: 1
+  GridCamera: {fileID: 0}
+  TileTemplate: {fileID: 8063394192659960987}
+  TotalActiveSplatBudget: 8000000
+  TotalEstimatedResidentGpuMB: 6400
+  CacheCooldownSeconds: 8
+  LodBaseDistance: 0.5
+  LodMultiplier: 2
+  LodRangeMin: 0
+  LodRangeMax: 6
+  LodBehindPenalty: 1
+  LodHysteresis: 0.1
+  LodUpdateIntervalFrames: 10
+  LodUnderfillLimit: 0
+  EnablePredictivePrefetch: 0
+  PredictionHorizonSeconds: 1.25
+  PredictiveLodRefinementLevels: 1
+  PredictionFrustumPaddingMeters: 1
+  PredictivePrefetchSplatBudgetPerTile: 250000
+  PredictiveResidentBudgetMB: 512
+  PredictionVelocitySmoothingSeconds: 0.2
+  MaxPredictionSpeedMetersPerSecond: 20
+  MaxPredictionAngularSpeedDegreesPerSecond: 360

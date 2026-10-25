@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added frustum culling, LOD hysteresis, aggregate active-splat and estimated resident-GPU budgets, and optional camera-motion predictive prefetch (off by default).
 - Added asynchronous SOG decode and Spark packing for streamed assets.
 - Split optional camera-motion probing, profiler sampling, and live counters into `GsplatLodGridDiagnostics`; the runtime grid no longer exposes debug controls.
+- Added a ready-to-place `ForestTileGrid` prefab under `Runtime/Prefabs` with grid and tile-source settings editable from one Inspector.
 
 ### Changed
 
