@@ -164,7 +164,9 @@ You can also create a GameObject manually, add a `Gsplat Renderer` component, an
 
 ## Stream and tile large captures
 
-For PlayCanvas LOD captures, import or load the `lod-meta.json` manifest with `GsplatLodManifestAsset` or `GsplatLodStreamer.ManifestUri`. Add `GsplatLodStreamer` to a tile template, assign the manifest and camera, then add `GsplatLodTileGrid` to a parent GameObject and assign that streamer as **Tile Template**. The grid supports 3x3 through 5x5 tiles, recenters in XZ around the camera, and shares decoded assets for repeated tile URIs.
+For PlayCanvas LOD captures, import or load the `lod-meta.json` manifest with `GsplatLodManifestAsset` or `GsplatLodStreamer.ManifestUri`. Make a parent GameObject with `GsplatLodTileGrid` and a child tile source with `GsplatLodStreamer`, then assign the child as **Tile Template**. The grid supports 3x3 through 5x5 tiles, recenters in XZ around the camera, and shares decoded assets for repeated tile URIs.
+
+The grid root Inspector is the configuration entry point: it exposes shared layout, LOD and budget controls, plus the tile source's manifest, compression and rendering settings. The child streamer is managed by the grid and directs you back to the root Inspector, avoiding duplicate controls. Save the root and child together as a prefab, then place that prefab once in each scene. The prefab does not bundle project-specific `StreamingAssets`; copy the manifest and its referenced data into the consuming project.
 
 Use **Total Active Splat Budget** to cap visible draw work across the grid and **Total Estimated Resident GPU MB** to cap cached and in-flight tile assets. The resident value is an estimate, not a hardware VRAM counter. Keep the manifest and every referenced SOG resource available under `StreamingAssets` when loading by URI. Tile data and scenes are not bundled with this package.
 

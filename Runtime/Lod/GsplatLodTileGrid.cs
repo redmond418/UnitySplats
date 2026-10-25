@@ -39,6 +39,8 @@ namespace Gsplat
         [Min(1.2f)] public float LodMultiplier = 2f;
         [Min(0)] public int LodRangeMin;
         [Min(0)] public int LodRangeMax = 6;
+        [Tooltip("Treat leaves behind the camera as farther away so they use coarser LODs.")]
+        [Min(1f)] public float LodBehindPenalty = 1f;
         [Range(0f, 0.49f)] public float LodHysteresis = 0.1f;
         [Range(1, 120)] public int LodUpdateIntervalFrames = 10;
         [Min(0)] public int LodUnderfillLimit;
@@ -517,6 +519,7 @@ namespace Gsplat
             tile.LodMultiplier = Mathf.Max(1.2f, LodMultiplier);
             tile.LodRangeMin = Mathf.Max(0, LodRangeMin);
             tile.LodRangeMax = Mathf.Max(tile.LodRangeMin, LodRangeMax);
+            tile.LodBehindPenalty = Mathf.Max(1f, LodBehindPenalty);
             tile.LodHysteresis = Mathf.Clamp(LodHysteresis, 0f, 0.49f);
             tile.LodUpdateIntervalFrames = Mathf.Clamp(LodUpdateIntervalFrames, 1, 120);
             tile.LodUpdatePhaseFrames = tileIndex % tile.LodUpdateIntervalFrames;
@@ -546,6 +549,7 @@ namespace Gsplat
             LodMultiplier = Mathf.Max(1.2f, LodMultiplier);
             LodRangeMin = Mathf.Max(0, LodRangeMin);
             LodRangeMax = Mathf.Max(LodRangeMin, LodRangeMax);
+            LodBehindPenalty = Mathf.Max(1f, LodBehindPenalty);
         }
     }
 }
