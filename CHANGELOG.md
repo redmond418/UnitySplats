@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added camera-centered 3x3–5x5 tile grids, XZ recentering, shared SOG asset caching, and staggered per-tile LOD evaluation.
 - Added frustum culling, LOD hysteresis, aggregate active-splat and estimated resident-GPU budgets, and optional camera-motion predictive prefetch (off by default).
 - Added asynchronous SOG decode and Spark packing for streamed assets.
+- Split optional camera-motion probing, profiler sampling, and live counters into `GsplatLodGridDiagnostics`; the runtime grid no longer exposes debug controls.
 
 ### Changed
 

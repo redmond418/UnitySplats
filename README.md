@@ -170,6 +170,8 @@ Use **Total Active Splat Budget** to cap visible draw work across the grid and *
 
 Camera-motion predictive prefetch is optional and off by default. Regular LOD streaming still loads the LOD needed by visible leaves and may request a finer level for them.
 
+`GsplatLodGridDiagnostics` is an optional Play Mode helper for live counters, profiler samples, and the camera-motion probe. It is not required by the tile grid and is not attached automatically; add it to the grid GameObject only when profiling.
+
 In the Scene view, click anywhere inside a splat's transformed asset bounds to select its GameObject; a collider is not required. Unity's normal Shift/Ctrl selection modifiers continue to work. Selecting several `GsplatRenderer` GameObjects enables multi-object editing for their shared inspector properties and can fit all attached `BoxCollider` components in one action.
 
 When two or more Spark renderers overlap, leave **Enable Cross-Renderer Sorting** enabled in `Project Settings > Gsplat`. On supported Vulkan, Direct3D 12, and Metal devices this creates one shared per-splat depth order, preventing whole captures from switching in front of one another as the camera moves. The portable CPU sorter used by OpenGL, WebGL, Direct3D 11, and unsupported GPU configurations retains separate draw calls and cannot provide the true merged order.
